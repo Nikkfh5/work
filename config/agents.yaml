@@ -1,0 +1,75 @@
+# Конфигурация воркеров
+# Добавить нового воркера = новая запись здесь + GIT_TOKEN_* в .env + новый docker-compose сервис
+
+workers:
+  python_1:
+    model: claude-opus-4-6
+    lang: python
+    display_name: "Python Dev #1"
+    telegram_contact: "@python_dev_1"       # заменить на реальный username
+    email: "python1@yourcompany.com"         # заменить на реальный адрес
+    git_repo: "https://github.com/org/python-tasks-1"
+    git_token_env: GIT_TOKEN_PYTHON1
+    system_prompt_extra: |
+      Ты Python-разработчик. Пишешь чистый, протестированный код по PEP 8.
+      Используешь современный Python 3.11+: dataclasses, type hints, async/await.
+    active: true
+
+  python_2:
+    model: claude-opus-4-6
+    lang: python
+    display_name: "Python Dev #2"
+    telegram_contact: "@python_dev_2"
+    email: "python2@yourcompany.com"
+    git_repo: "https://github.com/org/python-tasks-2"
+    git_token_env: GIT_TOKEN_PYTHON2
+    system_prompt_extra: |
+      Ты Python-разработчик специализирующийся на data science и ML.
+      Используешь numpy, pandas, scikit-learn, PyTorch.
+    active: false  # включить на месяц 2
+
+  cpp_1:
+    model: claude-opus-4-6
+    lang: cpp
+    display_name: "C++ Dev #1"
+    telegram_contact: "@cpp_dev_1"
+    email: "cpp1@yourcompany.com"
+    git_repo: "https://gitlab.com/org/cpp-tasks-1"
+    git_token_env: GIT_TOKEN_CPP1
+    system_prompt_extra: |
+      Ты C++ разработчик. Пишешь на C++17/20, следишь за memory safety.
+      Используешь CMake для сборки.
+    active: false  # включить на месяц 3
+
+  cpp_2:
+    model: claude-opus-4-6
+    lang: cpp
+    display_name: "C++ Dev #2"
+    telegram_contact: "@cpp_dev_2"
+    email: "cpp2@yourcompany.com"
+    git_repo: "https://gitlab.com/org/cpp-tasks-2"
+    git_token_env: GIT_TOKEN_CPP2
+    system_prompt_extra: |
+      Ты C++ разработчик специализирующийся на системном программировании и embedded.
+    active: false  # включить на месяц 4
+
+  go_1:
+    model: claude-opus-4-6
+    lang: go
+    display_name: "Go Dev #1"
+    telegram_contact: "@go_dev_1"
+    email: "go1@yourcompany.com"
+    git_repo: "https://github.com/org/go-tasks-1"
+    git_token_env: GIT_TOKEN_GO1
+    system_prompt_extra: |
+      Ты Go-разработчик. Пишешь идиоматичный Go, следишь за goroutine safety.
+      Используешь стандартную библиотеку там где это возможно.
+    active: false  # включить на месяц 5
+
+supervisor:
+  model: claude-opus-4-6
+  telegram_owner_chat_id_env: TELEGRAM_OWNER_CHAT_ID  # chat_id владельца системы
+  escalation_threshold_hours: 24    # через сколько часов без прогресса эскалировать
+  daily_summary_hour_utc: 9         # час UTC для ежедневного дайджеста
+  context_supervisor_coverage: 0.6  # 60% контекста каждого воркера видит supervisor
+  context_worker_coverage: 0.9      # 90% своего контекста видит воркер
