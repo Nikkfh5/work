@@ -1,238 +1,207 @@
 # AI Orchestration System — CLAUDE.md
 
-## Что это за проект
+## Что это
 
-"AI OS" — система из супервайзора (Python бот) и воркеров (Claude Code CLI сессии),
-которая принимает задания через Telegram и Email, маршрутизирует к нужному воркеру,
-следит за прогрессом и уведомляет владельца о важных решениях.
+Python supervisor (asyncio, 24/7) + воркеры (claude CLI subprocess).
+Задания через Telegram/Email → маршрутизация → воркер выполняет код → review → git → Notion.
+Подписка Claude Code Max. **Без anthropic SDK. Без API ключей.**
 
-Подписка: Claude Code Max ($300/мес, x20 лимиты). Без отдельного Anthropic API.
-Воркеры = экземпляры `claude` CLI запускаемые как subprocess в их рабочих папках.
-
-Референс архитектуры: https://github.com/vakovalskii/ValeDesk
+Детальная архитектура: `plans/wild-humming-seal.md` (Plan v5).
 
 ---
 
-## Как работает система (главное)
+## Инварианты проекта (не нарушать никогда)
+
+| # | Инвариант |
+|---|-----------|
+| 1 | `db.py` — низкоуровневый транспорт, логику не добавлять |
+| 2 | `json_guard` — только парсинг/валидация, не пишет файлы и не пишет в DB |
+| 3 | `run_logger` — только запись файлов + task_runs, не валидирует JSON |
+| 4 | Воркеры не запускают команды (только читают/пишут файлы + JSON stdout) |
+| 5 | Все внешние команды — только через `safe_exec`, никогда `shell=True` |
+| 6 | Все логи — только через `redact()`, raw stdout/stderr только в файлах |
+| 7 | В DB только пути к логам, не сами строки |
+| 8 | Все изменения схемы — только через `storage/migrate.py` |
+| 9 | Bash hook воркеров: read-only allowlist (ls/cat/grep/git diff), блокировка записи/сети |
+| 10 | `supervisor` — единственный кто пишет клиенту (TG/Email) |
+
+---
+
+## Файлы — НЕ ТРОГАТЬ
 
 ```
-[Telegram / Email]
-       │
-       ▼
-[supervisor/main.py]          ← asyncio Python бот, 24/7 на VPS
-       │                         НЕ использует anthropic SDK
-       ├── router.py             ← правило: contact → worker_id (из agents.yaml)
-       ├── escalation.py         ← триггеры: написать владельцу в TG
-       ├── summarizer.py         ← вызывает `claude --print` для дайджеста
-       │
-       │   subprocess(['claude', '--print', task, '--no-interactive'])
-       │           запускается в директории воркера
-       ▼
-[workers/python_1/]           ← рабочая папка воркера
-   ├── CLAUDE.md              ← роль + инструкции для Claude Code
-   ├── workspace/             ← сюда пишется код
-   └── .claude/               ← сессия Claude Code (--resume поддерживается)
+storage/db.py               ← низкоуровневый execute/query (исключение: PRAGMA busy_timeout)
+supervisor/router.py        ← contact → worker_id
+supervisor/claude_runner.py ← subprocess обёртка
+tests/test_db.py            ← 10 тестов, должны всегда быть зелёными
 ```
 
-### Воркер — это Claude Code сессия
+Если нужно изменить запрещённый файл — **не меняй**, объясни почему.
 
-Каждый воркер это НЕ Python код с anthropic SDK.
-Каждый воркер — это `claude` CLI запущенный в своей папке:
+---
 
-```bash
-cd workers/python_1
-claude --print "ТЗ от клиента: {task_description}" --no-interactive
+## Ответственность модулей
+
 ```
-
-Claude Code сам:
-- Читает CLAUDE.md как системный контекст
-- Пишет код в workspace/
-- Делает git commit + push
-- Возвращает результат в stdout → супервайзор читает и пишет в БД
-
-### Супервайзор — это Python asyncio бот
-
-Супервайзор сам НЕ является Claude агентом для рутинных операций.
-Только для сложных решений (суммаризация, эскалация) супервайзор вызывает:
-
-```bash
-claude --print "Суммаризируй статус проекта: {context}" --no-interactive
+supervisor/log_utils.py      redact() для секретов в логах
+storage/migrate.py           schema versioning, идемпотентные миграции
+supervisor/config_validator  fail-fast валидация agents.yaml на старте
+supervisor/lease_manager.py  атомарный захват задачи + state machine
+supervisor/json_guard.py     парсинг/валидация JSON из stdout агентов
+supervisor/run_logger.py     запись stdout/stderr в файлы + task_runs
+supervisor/safe_exec.py      профильный allowlist-runner + realpath check
+supervisor/repo_manager.py   bare mirror + worktree + symlink per task
+supervisor/hooks/guard_bash  read-only Bash guard для воркеров
+integrations/*_handler.py   только внешний транспорт (TG, Email, Notion)
+supervisor/main.py           asyncio orchestration, не бизнес-логика
 ```
 
 ---
 
-## Технологический стек
+## Порядок реализации (Фаза 0 — первая)
 
-- **Python 3.11+** + asyncio — супервайзор и оркестрация
-- **claude CLI** — все AI вызовы, через подписку Claude Code Max
-- **SQLite** — единственный источник правды: `data/orchestrator.db`
-- **python-telegram-bot** — Telegram интеграция
-- **imaplib / smtplib** — Email интеграция
-- **GitPython** — git операции (или Claude Code сам коммитит)
-- **pytest** — тестирование
-- **Docker Compose** — деплой на VPS
+```
+1. log_utils.py       ← ПЕРВЫМ: логи не должны течь с самого старта
+2. migrate.py
+3. config_validator.py
+4. lease_manager.py
+5. json_guard.py
+6. run_logger.py
+7. safe_exec.py
+8. repo_manager.py
+9. guard_bash.py + settings.json
+```
+
+Не перескакивать. Не начинать main.py раньше Фазы 0.
 
 ---
 
-## Структура файлов
+## Как просить модель (шаблон задачи)
+
+Для каждого модуля давать **жёсткий контракт**, не "сделай модуль":
 
 ```
-work/
-├── CLAUDE.md                    ← этот файл
-├── .env                         ← секреты (не в git)
-├── .env.example                 ← шаблон
-├── requirements.txt             ← БЕЗ anthropic SDK
-├── docker-compose.yml
-├── Makefile
-├── data/
-│   └── orchestrator.db          ← создаётся автоматически
-├── supervisor/
-│   ├── main.py                  ← asyncio event loop, точка входа
-│   ├── router.py                ← contact → worker_id (rule-based)
-│   ├── claude_runner.py         ← subprocess обёртка для claude CLI
-│   ├── escalation.py            ← триггеры → уведомить владельца
-│   └── summarizer.py            ← ежедневный дайджест через claude --print
-├── workers/
-│   ├── python_1/
-│   │   ├── CLAUDE.md            ← роль: Python dev #1
-│   │   └── workspace/           ← сюда пишется код
-│   ├── python_2/                ← добавить месяц 2
-│   ├── cpp_1/                   ← добавить месяц 3
-│   ├── cpp_2/                   ← добавить месяц 4
-│   └── go_1/                    ← добавить месяц 5
-├── integrations/
-│   ├── telegram_handler.py
-│   ├── email_handler.py
-│   └── meeting_handler.py
-├── storage/
-│   ├── schema.sql
-│   ├── db.py
-│   └── context_store.py
-├── config/
-│   ├── agents.yaml
-│   └── routing_rules.yaml
-└── tests/
-    ├── test_db.py
-    ├── test_router.py
-    └── test_claude_runner.py
+Реализуй `supervisor/json_guard.py` и `tests/test_json_guard.py`.
+
+Можно менять:
+- supervisor/json_guard.py
+- tests/test_json_guard.py
+
+Нельзя менять:
+- storage/db.py, supervisor/router.py, supervisor/claude_runner.py, tests/test_db.py
+
+Контракт:
+- extract_json(raw: str) -> dict | None
+  1. ищет между <<<JSON>>>...<<<END>>>
+  2. fallback: первый JSON-блок regex + json.loads
+- validate_worker_schema(obj) -> tuple[bool, str]
+- validate_reviewer_schema(obj) -> tuple[bool, str]
+- validate_health_schema(obj) -> tuple[bool, str]
+- НЕ пишет файлы, НЕ пишет в DB, НЕ запускает subprocess
+
+Тесты: happy path с маркерами, fallback path, невалидный JSON,
+       невалидная схема worker, валидная схема health
+
+Сначала дай план (функции + тесты), потом код.
 ```
 
 ---
 
-## Конвенции кода
+## Definition of Done (каждого модуля)
 
-- Все файлы: UTF-8, snake_case для переменных и функций
-- Классы: PascalCase
-- Константы: UPPER_SNAKE_CASE
+- [ ] Модуль реализован полностью по контракту
+- [ ] Unit-тесты: happy path + ошибка + 1–2 edge cases
+- [ ] Нет изменений запрещённых файлов
+- [ ] Нет `shell=True`
+- [ ] Все ошибки логируются через `logger.warning/error` с context (task_id, phase)
+- [ ] `pytest tests/ -v` — всё зелёное включая старые тесты
+
+---
+
+## Формат ответа модели (требовать в конце)
+
+```
+## Что сделано
+## Изменённые файлы
+## Добавленные тесты
+## Что не сделано / риски
+## Следующий шаг
+```
+
+---
+
+## Соглашения кода
+
+- Python 3.11+, asyncio везде где есть I/O
+- snake_case / PascalCase / UPPER_SNAKE_CASE
 - Каждый модуль начинается с docstring
-- Async везде где есть I/O
-- Логирование: `import logging; logger = logging.getLogger(__name__)`
-- Никаких глобальных состояний — всё через DB
+- `import logging; logger = logging.getLogger(__name__)`
+- DI вместо глобалов: передавать `db`, `now_fn`, `uuid_fn`, `runner` параметрами
+- Никаких глобальных состояний
 
----
+### Коды ошибок (last_error_reason)
 
-## Стратегия тестирования по этапам
-
-### Этап 1 — БД (schema.sql + db.py)
-```bash
-pytest tests/test_db.py -v
+```python
+E_JSON_INVALID     = "json_invalid"
+E_JSON_SCHEMA      = "json_schema_invalid"
+E_LEASE_STALE      = "lease_stale"
+E_LEASE_CONFLICT   = "lease_conflict"
+E_SAFEEXEC_DENY    = "safeexec_denied"
+E_SAFEEXEC_TIMEOUT = "safeexec_timeout"
+E_GIT_PUSH_FAIL    = "git_push_failed"
+E_WORKER_CRASH     = "worker_crash"
 ```
-Проверяем: все таблицы созданы, CRUD работает, контекст накапливается, директивы доставляются.
 
-### Этап 2 — Router
-```bash
-pytest tests/test_router.py -v
-```
-Проверяем: каждый контакт из agents.yaml → правильный worker_id. Неизвестный → ValueError.
+### Формат лог-записей
 
-### Этап 3 — Claude Runner (мок claude CLI)
-```bash
-pytest tests/test_claude_runner.py -v
-```
-Проверяем: subprocess запускается в правильной директории, stdout читается, ошибки обрабатываются.
-
-### Этап 4 — Telegram интеграция (mock бот)
-```bash
-pytest tests/test_integrations.py -v
-```
-Проверяем: входящее сообщение → task в БД, исходящее → API вызов.
-
-### Этап 5 — End-to-end (реальный claude CLI)
-```bash
-python tests/e2e_test.py
-```
-Сценарий: симулировать TG сообщение → супервайзор создаёт директиву → claude CLI запускается в workers/python_1/ → появляется git коммит.
-
----
-
-## Переменные окружения (.env)
-
-```bash
-# Telegram
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_OWNER_CHAT_ID=...
-
-# Email
-GMAIL_USER=...
-GMAIL_APP_PASSWORD=...
-IMAP_SERVER=imap.gmail.com
-SMTP_SERVER=smtp.gmail.com
-
-# Meetings
-TLDV_API_KEY=...
-
-# Git токены воркеров
-GIT_TOKEN_PYTHON1=ghp_...
-GIT_TOKEN_PYTHON2=ghp_...
-GIT_TOKEN_CPP1=glpat-...
-GIT_TOKEN_CPP2=glpat-...
-GIT_TOKEN_GO1=ghp_...
-
-# System
-DB_PATH=data/orchestrator.db
-LOG_LEVEL=INFO
-POLL_INTERVAL_SECONDS=30
-CLAUDE_CLI_PATH=claude          # или полный путь если не в PATH
-DAILY_SUMMARY_HOUR_UTC=9
+```python
+logger.warning("safeexec_denied task_id=%s cmd=%s reason=%s", task_id, cmd[0], reason)
+logger.error("lease_conflict task_id=%s worker=%s", task_id, worker_id)
 ```
 
 ---
 
-## Запуск локально
+## Тестирование
+
+- Для файловых операций: `tmp_path` (pytest) или `tempfile.TemporaryDirectory`
+- Для safe_exec: передавать `allowed_roots` параметром (не хардкодить `/app/`)
+- Для lease_manager: мокать `now_fn` и `uuid_fn` через параметры
+- Для claude_runner: мокать subprocess через `monkeypatch`
+- Интеграционные тесты с реальным git — только для `repo_manager` (изолированно в tmp)
+
+Запускать после каждого модуля:
+```bash
+pytest tests/ -v
+```
+
+---
+
+## Стек
+
+```
+Python 3.11+ / asyncio / SQLite (WAL) / pytest
+python-telegram-bot / notion-client / imaplib
+claude CLI (subprocess) / GitPython
+Docker Compose (VPS)
+```
+
+---
+
+## Запуск
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env
-# заполнить .env
+cp .env.example .env  # заполнить
 
-# Проверить claude CLI доступен
-claude --version
-
-# Тесты
-make test
-
-# Запустить супервайзора
+claude --version      # проверить CLI
+pytest tests/ -v      # все зелёные?
 python -m supervisor.main
 ```
 
-## Деплой на VPS
+## Деплой
 
 ```bash
-# Убедиться что claude CLI установлен на VPS и авторизован
 claude auth login
-
 docker-compose up -d
 make logs
 ```
-
----
-
-## Важные решения архитектуры (не менять)
-
-1. **Нет anthropic SDK** — только `claude` CLI через подписку
-2. **Воркеры не общаются напрямую** — только через БД
-3. **Контекст append-only** — никогда не удалять из agent_context
-4. **Жёсткая привязка** контакт → воркер, не динамическая
-5. **Один SQLite файл** — монтируется как Docker volume
-6. **Supervisor = единственный кто пишет клиенту**
-7. **Каждый воркер** — отдельная папка со своим CLAUDE.md
