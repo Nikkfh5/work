@@ -1,75 +1,83 @@
-# Конфигурация воркеров
-# Добавить нового воркера = новая запись здесь + GIT_TOKEN_* в .env + новый docker-compose сервис
-
-workers:
-  python_1:
-    model: claude-opus-4-6
-    lang: python
-    display_name: "Python Dev #1"
-    telegram_contact: "@python_dev_1"       # заменить на реальный username
-    email: "python1@yourcompany.com"         # заменить на реальный адрес
-    git_repo: "https://github.com/org/python-tasks-1"
-    git_token_env: GIT_TOKEN_PYTHON1
-    system_prompt_extra: |
-      Ты Python-разработчик. Пишешь чистый, протестированный код по PEP 8.
-      Используешь современный Python 3.11+: dataclasses, type hints, async/await.
-    active: true
-
-  python_2:
-    model: claude-opus-4-6
-    lang: python
-    display_name: "Python Dev #2"
-    telegram_contact: "@python_dev_2"
-    email: "python2@yourcompany.com"
-    git_repo: "https://github.com/org/python-tasks-2"
-    git_token_env: GIT_TOKEN_PYTHON2
-    system_prompt_extra: |
-      Ты Python-разработчик специализирующийся на data science и ML.
-      Используешь numpy, pandas, scikit-learn, PyTorch.
-    active: false  # включить на месяц 2
-
-  cpp_1:
-    model: claude-opus-4-6
-    lang: cpp
-    display_name: "C++ Dev #1"
-    telegram_contact: "@cpp_dev_1"
-    email: "cpp1@yourcompany.com"
-    git_repo: "https://gitlab.com/org/cpp-tasks-1"
-    git_token_env: GIT_TOKEN_CPP1
-    system_prompt_extra: |
-      Ты C++ разработчик. Пишешь на C++17/20, следишь за memory safety.
-      Используешь CMake для сборки.
-    active: false  # включить на месяц 3
-
-  cpp_2:
-    model: claude-opus-4-6
-    lang: cpp
-    display_name: "C++ Dev #2"
-    telegram_contact: "@cpp_dev_2"
-    email: "cpp2@yourcompany.com"
-    git_repo: "https://gitlab.com/org/cpp-tasks-2"
-    git_token_env: GIT_TOKEN_CPP2
-    system_prompt_extra: |
-      Ты C++ разработчик специализирующийся на системном программировании и embedded.
-    active: false  # включить на месяц 4
-
-  go_1:
-    model: claude-opus-4-6
-    lang: go
-    display_name: "Go Dev #1"
-    telegram_contact: "@go_dev_1"
-    email: "go1@yourcompany.com"
-    git_repo: "https://github.com/org/go-tasks-1"
-    git_token_env: GIT_TOKEN_GO1
-    system_prompt_extra: |
-      Ты Go-разработчик. Пишешь идиоматичный Go, следишь за goroutine safety.
-      Используешь стандартную библиотеку там где это возможно.
-    active: false  # включить на месяц 5
+# config/agents.yaml — конфигурация воркеров и супервайзора
+#
+# Формат: см. plans/wild-humming-seal.md (Plan v5)
+# Добавить воркера = новая запись + GIT_TOKEN_* в .env
+# Все активные воркеры проходят config_validator на старте (fail-fast)
 
 supervisor:
   model: claude-opus-4-6
-  telegram_owner_chat_id_env: TELEGRAM_OWNER_CHAT_ID  # chat_id владельца системы
+  max_concurrent: 2
+  confidence_threshold: 70          # минимальный confidence для auto-push
   escalation_threshold_hours: 24    # через сколько часов без прогресса эскалировать
   daily_summary_hour_utc: 9         # час UTC для ежедневного дайджеста
+  health_check_hour_utc: 3          # час UTC для health check
+  health_check_every_days: 1        # как часто запускать health check
+  telegram_owner_chat_id_env: TELEGRAM_OWNER_CHAT_ID
   context_supervisor_coverage: 0.6  # 60% контекста каждого воркера видит supervisor
   context_worker_coverage: 0.9      # 90% своего контекста видит воркер
+
+workers:
+
+  # ── Health Monitor ────────────────────────────────────────────────────────
+  health_monitor:
+    model: claude-opus-4-6
+    active: false                   # включить когда система стабильна
+    is_health: true
+    max_attempts: 2
+    confidence_threshold: 60
+    mcp:
+      required: ["context7"]
+      optional: []
+
+  # ── Job 1 Worker (Python) ─────────────────────────────────────────────────
+  job1_worker:
+    model: claude-opus-4-6
+    lang: python
+    display_name: "Job 1 Python Worker"
+    telegram_contact: "@owner_username"    # заменить на @username владельца
+    email: "owner@example.com"             # заменить на реальный email
+    active: false                          # включить после настройки .env
+    confidence_threshold: 75
+    max_review_iterations: 3
+    max_attempts: 3
+    reviewer_id: job1_reviewer
+    git_token_env: GIT_TOKEN_JOB1
+    mcp:
+      required: ["context7"]
+      optional: []
+
+    repos:
+      - alias: api
+        url: "https://github.com/org/api"  # заменить на реальный URL
+        token_env: GIT_TOKEN_JOB1
+        clone_strategy: shallow            # mirror|shallow|partial|sparse
+        max_disk_mb: 500
+
+    branching_policy:
+      pattern: "ai/task-{task_id}"
+      base: "main"
+      protected: ["main", "master", "production"]
+
+    delivery_policy:
+      mode: "push"                         # push|patch_to_owner
+
+    ci_policy:
+      run_before_push:
+        - ["pytest"]
+        - ["ruff", "check", "."]
+      required_pass: true
+
+    style_policy:
+      formatters:
+        - ["ruff", "format", "."]
+      run_before_commit: true
+
+  # ── Job 1 Reviewer ────────────────────────────────────────────────────────
+  job1_reviewer:
+    model: claude-opus-4-6
+    is_reviewer: true
+    reviews_for: job1_worker
+    active: false                          # включить вместе с job1_worker
+    mcp:
+      required: ["context7"]
+      optional: []
