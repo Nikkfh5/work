@@ -18,6 +18,7 @@ SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
 def get_db_path() -> str:
+    """Вернуть путь к БД из env DB_PATH (дефолт: data/orchestrator.db)."""
     return os.getenv("DB_PATH", "data/orchestrator.db")
 
 
@@ -51,6 +52,7 @@ def get_conn(db_path: Optional[str] = None):
 
 
 def _new_id() -> str:
+    """Сгенерировать новый UUID4 как строку."""
     return str(uuid.uuid4())
 
 
@@ -84,12 +86,14 @@ def create_task(
 
 
 def get_task(task_id: str) -> Optional[dict]:
+    """Получить задачу по ID. Возвращает dict или None если не найдена."""
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
     return dict(row) if row else None
 
 
 def update_task_status(task_id: str, status: str) -> None:
+    """Обновить статус задачи и updated_at."""
     with get_conn() as conn:
         conn.execute(
             "UPDATE tasks SET status=?, updated_at=datetime('now') WHERE id=?",
@@ -98,6 +102,7 @@ def update_task_status(task_id: str, status: str) -> None:
 
 
 def get_tasks_by_worker(worker_id: str, status: Optional[str] = None) -> list[dict]:
+    """Получить задачи воркера, опционально фильтруя по статусу."""
     with get_conn() as conn:
         if status:
             rows = conn.execute(
@@ -152,6 +157,7 @@ def get_unread_worker_updates() -> list[dict]:
 
 
 def mark_worker_update_read(update_id: str) -> None:
+    """Пометить обновление от воркера как прочитанное супервайзором."""
     with get_conn() as conn:
         conn.execute(
             "UPDATE worker_updates SET read_by_supervisor=1, processed_at=datetime('now') WHERE id=?",
@@ -200,6 +206,7 @@ def get_unread_directives(worker_id: str) -> list[dict]:
 
 
 def mark_directive_read(directive_id: str) -> None:
+    """Пометить директиву супервайзора как прочитанную воркером."""
     with get_conn() as conn:
         conn.execute(
             "UPDATE supervisor_directives SET read_by_worker=1, read_at=datetime('now') WHERE id=?",
@@ -255,6 +262,7 @@ def get_context(agent_id: str, coverage: float = 0.9) -> list[dict]:
 # ─────────────────────────────────────────────────────────
 
 def add_message(task_id: str, role: str, content: str, agent_id: str = "") -> str:
+    """Добавить сообщение к задаче. Возвращает msg_id."""
     msg_id = _new_id()
     with get_conn() as conn:
         conn.execute(
@@ -265,6 +273,7 @@ def add_message(task_id: str, role: str, content: str, agent_id: str = "") -> st
 
 
 def get_messages(task_id: str) -> list[dict]:
+    """Получить все сообщения задачи в хронологическом порядке."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM messages WHERE task_id=? ORDER BY created_at",
@@ -284,6 +293,7 @@ def create_escalation(
     worker_id: Optional[str] = None,
     context: Optional[str] = None,
 ) -> str:
+    """Создать эскалацию (вопрос воркера к оператору). Возвращает esc_id."""
     esc_id = _new_id()
     with get_conn() as conn:
         conn.execute(
@@ -296,6 +306,7 @@ def create_escalation(
 
 
 def resolve_escalation(esc_id: str, response: str) -> None:
+    """Закрыть эскалацию, записав ответ оператора."""
     with get_conn() as conn:
         conn.execute(
             """UPDATE escalations
@@ -306,6 +317,7 @@ def resolve_escalation(esc_id: str, response: str) -> None:
 
 
 def get_open_escalations() -> list[dict]:
+    """Получить все нерешённые эскалации в хронологическом порядке."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT * FROM escalations WHERE resolved=0 ORDER BY created_at",
@@ -326,6 +338,7 @@ def save_meeting(
     transcript: str = "",
     external_id: str = "",
 ) -> str:
+    """Сохранить запись о встрече. Возвращает meeting_id."""
     meeting_id = _new_id()
     with get_conn() as conn:
         conn.execute(
@@ -343,6 +356,7 @@ def save_meeting(
 # ─────────────────────────────────────────────────────────
 
 def save_daily_summary(content: str) -> str:
+    """Сохранить ежедневный дайджест. Возвращает summary_id."""
     summary_id = _new_id()
     with get_conn() as conn:
         conn.execute(
@@ -353,6 +367,7 @@ def save_daily_summary(content: str) -> str:
 
 
 def mark_summary_sent(summary_id: str) -> None:
+    """Пометить дайджест как отправленный."""
     with get_conn() as conn:
         conn.execute(
             "UPDATE daily_summaries SET sent=1 WHERE id=?", (summary_id,)

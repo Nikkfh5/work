@@ -17,6 +17,7 @@ CONFIG_PATH = Path(__file__).parent.parent / "config" / "agents.yaml"
 
 class Router:
     def __init__(self, config_path: Optional[Path] = None):
+        """Загрузить agents.yaml и построить индексы контакт → worker_id."""
         path = config_path or CONFIG_PATH
         with open(path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
@@ -88,7 +89,9 @@ class Router:
         return {k: v for k, v in self._workers.items() if v.get("active")}
 
     def get_supervisor_config(self) -> dict:
+        """Вернуть секцию supervisor из agents.yaml."""
         return self._supervisor_cfg
 
     def all_worker_ids(self) -> list[str]:
+        """Вернуть список всех worker_id (включая неактивные)."""
         return list(self._workers.keys())

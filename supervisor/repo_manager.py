@@ -58,12 +58,15 @@ class RepoManager:
         self.now_fn = now_fn
 
     def _mirror_path(self, job: str, alias: str) -> Path:
+        """Путь к bare mirror: repos_cache/{job}/{alias}.git"""
         return self.repos_cache / job / f"{alias}.git"
 
     def _worktree_path(self, task_id: str, alias: str) -> Path:
+        """Путь к worktree для задачи: worktrees/{task_id}/{alias}"""
         return self.worktrees / task_id / alias
 
     def _symlink_path(self, job: str, task_id: str) -> Path:
+        """Путь к симлинку воркера: workers/{job}_worker/workspace/{task_id}"""
         return self.workers / f"{job}_worker" / "workspace" / task_id
 
     def _resolve_base_branch(self, mirror: Path, preferred: str) -> str:
