@@ -10,3 +10,11 @@ venv/
 dist/
 build/
 .DS_Store
+
+# Runtime данные (не коммитить)
+data/
+logs/
+
+# Рабочие директории воркеров (симлинки и результаты задач)
+workers/*/workspace/*
+!workers/*/workspace/.gitkeep

@@ -42,7 +42,7 @@ async def run_claude(
     Raises:
         ClaudeRunnerError: если claude вернул ошибку или таймаут
     """
-    cmd = [CLAUDE_CLI, "--print", prompt, "--no-interactive"]
+    cmd = [CLAUDE_CLI, "--print", prompt]
     if extra_args:
         cmd.extend(extra_args)
 

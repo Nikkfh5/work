@@ -311,14 +311,16 @@ async def test_run_worker_cycle_claude_error_notifies(db_path, mock_tg_handler):
     )
 
     task = {"id": task_id, "assigned_worker": "job1_worker", "description": "test"}
-    config = {"supervisor": {}, "workers": {"job1_worker": {}}}
+    # max_attempts=1 чтобы не ждать WORKER_RETRY_DELAY_SECONDS между попытками
+    config = {"supervisor": {}, "workers": {"job1_worker": {"max_attempts": 1}}}
 
     with patch("supervisor.claude_runner.run_claude", AsyncMock(side_effect=ClaudeRunnerError("not found"))):
         await run_worker_cycle(task, config, mock_tg_handler, db_path)
 
     mock_tg_handler.notify_owner.assert_called_once()
     call_arg = mock_tg_handler.notify_owner.call_args[0][0]
-    assert "ошибка" in call_arg.lower()
+    # После исчерпания попыток → requires_manual + /retry инструкция
+    assert "/retry" in call_arg
 
 
 @pytest.mark.asyncio

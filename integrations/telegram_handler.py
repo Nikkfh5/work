@@ -86,7 +86,7 @@ class TelegramHandler:
             updates: list[Update] = await self._bot.get_updates(
                 offset=offset + 1,
                 limit=100,
-                timeout=10,
+                timeout=30,  # long polling: Telegram держит соединение до 30s
             )
         except TelegramError as exc:
             logger.warning("telegram poll_once: get_updates error: %s", exc)
@@ -167,55 +167,92 @@ class TelegramHandler:
             return await self._create_task_from_message(chat_id, text, username, update.update_id)
 
     async def _handle_command(self, chat_id: int, text: str, username: str) -> str:
-        """Диспетчер команд /status, /approve, /reject, /summary."""
+        """Диспетчер команд /status, /approve, /reject, /retry, /cancel, /summary."""
         parts = text.split(maxsplit=2)
         cmd = parts[0].lower().split("@")[0]  # убрать @botname если есть
 
         if cmd == "/status":
             return await self._handle_status()
+        elif cmd == "/errors":
+            return await self._handle_errors()
         elif cmd == "/approve" and len(parts) >= 2:
             note = parts[2] if len(parts) > 2 else ""
             return await self._handle_approve(parts[1], note)
         elif cmd == "/reject" and len(parts) >= 2:
             reason = parts[2] if len(parts) > 2 else ""
             return await self._handle_reject(parts[1], reason)
+        elif cmd == "/retry" and len(parts) >= 2:
+            return await self._handle_retry(parts[1])
+        elif cmd == "/cancel" and len(parts) >= 2:
+            return await self._handle_cancel(parts[1])
         elif cmd == "/summary":
             return "Дайджест: в разработке (Фаза 2)."
         else:
             return (
                 f"Неизвестная команда: {cmd}\n"
-                "Доступные: /status, /approve <id>, /reject <id>, /summary"
+                "Доступные:\n"
+                "/status — активные задачи\n"
+                "/errors — задачи с ошибками\n"
+                "/retry <id> — повторить упавшую задачу\n"
+                "/cancel <id> — отменить задачу\n"
+                "/approve <id> — одобрить\n"
+                "/reject <id> — отклонить\n"
+                "/summary — дайджест (Фаза 2)"
             )
 
     async def _handle_status(self) -> str:
-        """Вернуть форматированный список активных задач."""
+        """Активные задачи + отдельно requires_manual (нужно действие) + счётчик ошибок."""
         try:
             with get_conn(self._db_path) as conn:
-                rows = conn.execute(
+                active_rows = conn.execute(
                     """
                     SELECT id, status, assigned_worker, title, created_at
                     FROM tasks
-                    WHERE status NOT IN ('done', 'cancelled', 'rejected')
-                    ORDER BY created_at DESC
-                    LIMIT 10
+                    WHERE status IN ('pending', 'pending_approval', 'running', 'blocked')
+                    ORDER BY created_at DESC LIMIT 10
                     """,
                 ).fetchall()
+                stuck_rows = conn.execute(
+                    """
+                    SELECT id, assigned_worker, title, last_error_reason
+                    FROM tasks WHERE status='requires_manual'
+                    ORDER BY updated_at DESC LIMIT 5
+                    """,
+                ).fetchall()
+                error_count = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status='error'",
+                ).fetchone()[0]
 
-            if not rows:
-                return "Активных задач нет."
+            lines = []
+            if active_rows:
+                lines.append("Активные задачи:")
+                for r in active_rows:
+                    short_id = r["id"][:8]
+                    title = r["title"] or "—"
+                    lines.append(f"• #{short_id} [{r['status']}] {r['assigned_worker']}: {title}")
+            else:
+                lines.append("Активных задач нет.")
 
-            lines = ["Активные задачи:"]
-            for r in rows:
-                short_id = r["id"][:8]
-                title = r["title"] or "—"
-                lines.append(f"• #{short_id} [{r['status']}] {r['assigned_worker']}: {title}")
+            if stuck_rows:
+                lines.append("\n🔴 Требуют действия (requires_manual):")
+                for r in stuck_rows:
+                    short_id = r["id"][:8]
+                    reason = r["last_error_reason"] or "—"
+                    lines.append(
+                        f"• #{short_id} {r['assigned_worker']}: {reason}"
+                        f"  /retry {short_id} | /cancel {short_id}"
+                    )
+
+            if error_count:
+                lines.append(f"\n⚠️ Временных ошибок: {error_count} → /errors")
+
             return "\n".join(lines)
         except Exception as exc:
             logger.error("handle_status error: %s", exc)
             return "Ошибка получения статуса."
 
     async def _handle_approve(self, task_id_prefix: str, note: str) -> str:
-        """Перевести задачу pending_approval → pending."""
+        """Перевести задачу pending_approval/requires_manual → pending."""
         full_id = self._resolve_task_id(task_id_prefix)
         if not full_id:
             return f"Задача {task_id_prefix!r} не найдена."
@@ -223,8 +260,9 @@ class TelegramHandler:
         try:
             with get_conn(self._db_path) as conn:
                 result = conn.execute(
-                    "UPDATE tasks SET status='pending', updated_at=datetime('now') "
-                    "WHERE id=? AND status='pending_approval'",
+                    "UPDATE tasks SET status='pending', last_error_reason=NULL, "
+                    "updated_at=datetime('now') "
+                    "WHERE id=? AND status IN ('pending_approval', 'requires_manual')",
                     (full_id,),
                 )
                 changed = result.rowcount > 0
@@ -234,9 +272,12 @@ class TelegramHandler:
                     "task_approved task_id=%s note=%s",
                     full_id, redact(note[:80]) if note else "",
                 )
-                return f"✓ Задача #{task_id_prefix[:8]} одобрена."
+                return f"✓ Задача #{task_id_prefix[:8]} одобрена и поставлена в очередь."
             else:
-                return f"Задача #{task_id_prefix[:8]} не в статусе pending_approval."
+                return (
+                    f"Задача #{task_id_prefix[:8]} не в статусе "
+                    f"pending_approval/requires_manual."
+                )
         except Exception as exc:
             logger.error("handle_approve error task_id=%s: %s", full_id, exc)
             return "Ошибка при одобрении."
@@ -267,6 +308,76 @@ class TelegramHandler:
         except Exception as exc:
             logger.error("handle_reject error task_id=%s: %s", full_id, exc)
             return "Ошибка при отклонении."
+
+    async def _handle_errors(self) -> str:
+        """Список задач в статусе error и requires_manual."""
+        try:
+            with get_conn(self._db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, status, assigned_worker, title, last_error_reason, updated_at
+                    FROM tasks WHERE status IN ('error', 'requires_manual')
+                    ORDER BY status DESC, updated_at DESC LIMIT 15
+                    """,
+                ).fetchall()
+            if not rows:
+                return "Задач с ошибками нет."
+            lines = []
+            for r in rows:
+                short_id = r["id"][:8]
+                reason = r["last_error_reason"] or "—"
+                icon = "🔴" if r["status"] == "requires_manual" else "⚠️"
+                lines.append(f"{icon} #{short_id} [{r['status']}] {r['assigned_worker']}: {reason}")
+            lines.append("\nПовторить: /retry <id>   Отменить: /cancel <id>")
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.error("handle_errors error: %s", exc)
+            return "Ошибка получения списка."
+
+    async def _handle_retry(self, task_id_prefix: str) -> str:
+        """Перевести задачу error/blocked/requires_manual → pending для повторного запуска."""
+        full_id = self._resolve_task_id(task_id_prefix)
+        if not full_id:
+            return f"Задача {task_id_prefix!r} не найдена."
+        try:
+            with get_conn(self._db_path) as conn:
+                result = conn.execute(
+                    "UPDATE tasks SET status='pending', last_error_reason=NULL, "
+                    "updated_at=datetime('now') "
+                    "WHERE id=? AND status IN ('error', 'blocked', 'requires_manual')",
+                    (full_id,),
+                )
+                changed = result.rowcount > 0
+            if changed:
+                logger.info("task_retry task_id=%s", full_id)
+                return f"↻ Задача #{task_id_prefix[:8]} поставлена в очередь повторно."
+            else:
+                return f"Задача #{task_id_prefix[:8]} не в статусе error/blocked/requires_manual."
+        except Exception as exc:
+            logger.error("handle_retry error task_id=%s: %s", full_id, exc)
+            return "Ошибка при повторном запуске."
+
+    async def _handle_cancel(self, task_id_prefix: str) -> str:
+        """Отменить задачу (любой статус кроме done)."""
+        full_id = self._resolve_task_id(task_id_prefix)
+        if not full_id:
+            return f"Задача {task_id_prefix!r} не найдена."
+        try:
+            with get_conn(self._db_path) as conn:
+                result = conn.execute(
+                    "UPDATE tasks SET status='cancelled', updated_at=datetime('now') "
+                    "WHERE id=? AND status != 'done'",
+                    (full_id,),
+                )
+                changed = result.rowcount > 0
+            if changed:
+                logger.info("task_cancelled task_id=%s", full_id)
+                return f"✗ Задача #{task_id_prefix[:8]} отменена."
+            else:
+                return f"Задача #{task_id_prefix[:8]} уже завершена или не найдена."
+        except Exception as exc:
+            logger.error("handle_cancel error task_id=%s: %s", full_id, exc)
+            return "Ошибка при отмене."
 
     async def _create_task_from_message(
         self,

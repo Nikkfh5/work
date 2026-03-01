@@ -19,6 +19,7 @@ supervisor/main.py — asyncio orchestration, точка входа систем
 
 import asyncio
 import logging
+import logging.handlers
 import os
 import signal
 import time
@@ -172,6 +173,73 @@ async def dispatch_pending_tasks(
 
 # ── Worker cycle ──────────────────────────────────────────────────────────────
 
+def _build_worker_prompt(description: str) -> str:
+    """
+    Собрать полный промпт для воркера: задание + обязательный JSON-вывод.
+
+    Инструкция по формату идёт в промпт (не только в CLAUDE.md), потому что
+    claude --print выполняет одиночный запрос без интерактива — CLAUDE.md служит
+    контекстом, но явная инструкция в промпте надёжнее.
+    """
+    return f"""\
+Задание от супервайзора:
+
+{description}
+
+─────────────────────────────────────────────
+ОБЯЗАТЕЛЬНО: после выполнения задания выведи результат СТРОГО в этом формате
+(без лишнего текста после <<<END>>>):
+
+<<<JSON>>>
+{{
+  "status": "done",
+  "confidence": <целое число 0-100>,
+  "result": {{
+    "repos": [],
+    "notes": "<что именно сделано, одна-две строки>"
+  }},
+  "question": null
+}}
+<<<END>>>
+
+Если задание непонятно или нужно уточнение — используй status "blocked" и заполни "question".
+Если произошла ошибка — используй status "error" и опиши её в "notes".
+confidence — твоя уверенность в правильности результата (0–100).
+─────────────────────────────────────────────
+"""
+
+
+def _build_json_correction_prompt(previous_output: str) -> str:
+    """
+    Коррекционный промпт: показать что вышло и попросить JSON.
+
+    Используется на повторных попытках когда воркер не вывел JSON-маркеры.
+    """
+    truncated = previous_output[:800] if len(previous_output) > 800 else previous_output
+    return f"""\
+В предыдущем ответе ты не вывел JSON в обязательном формате.
+
+Твой предыдущий ответ:
+{truncated}
+
+Выведи результат ТОЛЬКО в этом формате (без лишнего текста):
+
+<<<JSON>>>
+{{
+  "status": "done",
+  "confidence": <0-100>,
+  "result": {{
+    "repos": [],
+    "notes": "<что ты сделал>"
+  }},
+  "question": null
+}}
+<<<END>>>
+
+Если задание не выполнено — используй status "blocked" (с "question") или "error".
+"""
+
+
 async def run_worker_cycle(
     task: dict,
     config: dict,
@@ -179,9 +247,12 @@ async def run_worker_cycle(
     db_path: Optional[str] = None,
 ) -> None:
     """
-    Полный цикл выполнения задачи: lease → worktree → worker → json → notify.
+    Полный цикл выполнения задачи с retry: lease → попытки → json → notify.
 
-    Фаза 1: базовая структура (lease + claude_runner + json_guard + notify).
+    Retry-стратегия (max_attempts из agents.yaml):
+      - ClaudeRunnerError (crash): повтор с тем же промптом
+      - json_invalid / json_schema_invalid: повтор с коррекционным промптом
+      - safeexec_timeout: не ретраить (таймаут повторится)
     Reviewer cycle, Notion, escalation — Фаза 2.
     """
     from supervisor.claude_runner import ClaudeRunnerError, run_claude
@@ -193,90 +264,177 @@ async def run_worker_cycle(
     worker_cfg = config.get("workers", {}).get(worker_id, {})
     lease_ttl = int(os.getenv("WORKER_LEASE_TTL_SECONDS", "300"))
     worker_timeout = int(os.getenv("WORKER_TIMEOUT_SECONDS", "1800"))
+    max_attempts = int(worker_cfg.get("max_attempts", 3))
+    retry_delay = int(os.getenv("WORKER_RETRY_DELAY_SECONDS", "30"))
 
     logger.info("run_worker_cycle: start task_id=%s worker=%s", task_id, worker_id)
 
-    # Захватить lease
     token = acquire_lease(task_id, worker_id, ttl=lease_ttl, db_path=db_path)
     if not token:
         logger.warning("run_worker_cycle: lease conflict task_id=%s", task_id)
         return
 
+    def _set_error_reason(reason: str) -> None:
+        try:
+            with get_conn(db_path) as conn:
+                conn.execute(
+                    "UPDATE tasks SET last_error_reason=? WHERE id=?",
+                    (reason, task_id),
+                )
+        except Exception as _e:
+            logger.warning("run_worker_cycle: could not set error reason: %s", _e)
+
+    def _fail_final(reason: str, message: str) -> None:
+        """Финальный сбой после всех попыток → requires_manual + TG."""
+        _set_error_reason(reason)
+        release_lease(task_id, worker_id, token, "requires_manual", db_path=db_path)
+        logger.error(
+            "run_worker_cycle: requires_manual task_id=%s reason=%s", task_id, reason,
+        )
+        # notify запускается в caller через await — здесь только синхронная часть
+
     worker_dir = str(Path("workers") / worker_id)
-    stdout, stderr = "", ""
+    last_stdout = ""
+    use_correction = False  # True после json_invalid — использовать коррекционный промпт
 
     try:
-        # Запустить claude CLI
-        try:
-            stdout = await run_claude(
-                task["description"],
-                cwd=worker_dir,
-                timeout=worker_timeout,
+        for attempt in range(1, max_attempts + 1):
+            is_last = (attempt == max_attempts)
+            logger.info(
+                "run_worker_cycle: attempt %d/%d task_id=%s",
+                attempt, max_attempts, task_id,
             )
-        except ClaudeRunnerError as exc:
-            logger.error("run_worker_cycle: claude error task_id=%s: %s", task_id, exc)
-            release_lease(task_id, worker_id, token, "error", db_path=db_path)
-            await tg_handler.notify_owner(f"task#{task_id[:8]}: ошибка запуска воркера.")
-            return
-        except asyncio.TimeoutError:
-            logger.error("run_worker_cycle: timeout task_id=%s", task_id)
-            release_lease(task_id, worker_id, token, "error", db_path=db_path)
-            await tg_handler.notify_owner(f"task#{task_id[:8]}: таймаут воркера.")
-            return
 
-        # Парсим и валидируем JSON
-        parsed = extract_json(stdout)
-        valid, err = validate_worker_schema(parsed) if parsed else (False, "no JSON")
+            # Промпт:
+            #   - json_invalid на прошлой попытке → коррекционный (показать что вышло)
+            #   - crash или первая попытка → полный промпт с заданием
+            if use_correction and last_stdout:
+                prompt = _build_json_correction_prompt(last_stdout)
+            else:
+                prompt = _build_worker_prompt(task["description"])
+            use_correction = False  # сброс на каждой итерации
 
-        # Логируем run
-        log_run(
-            task_id=task_id,
-            phase="worker",
-            stdout=stdout,
-            stderr=stderr,
-            parsed_json=parsed,
-            json_valid=valid,
-            worker_id=worker_id,
-            db_path=db_path,
-        )
+            # Запустить claude CLI
+            try:
+                stdout = await run_claude(prompt, cwd=worker_dir, timeout=worker_timeout)
+                last_stdout = stdout
+            except asyncio.TimeoutError:
+                logger.error(
+                    "run_worker_cycle: timeout attempt=%d task_id=%s", attempt, task_id,
+                )
+                _fail_final("safeexec_timeout", "")
+                await tg_handler.notify_owner(
+                    f"⚠️ task#{task_id[:8]}: таймаут воркера.\n"
+                    f"Повтори: /retry {task_id[:8]}"
+                )
+                return  # таймаут — не ретраить
+            except ClaudeRunnerError as exc:
+                logger.error(
+                    "run_worker_cycle: claude error attempt=%d task_id=%s: %s",
+                    attempt, task_id, exc,
+                )
+                if is_last:
+                    _fail_final("worker_crash", "")
+                    await tg_handler.notify_owner(
+                        f"⚠️ task#{task_id[:8]}: воркер упал {max_attempts}× подряд.\n"
+                        f"{str(exc)[:150]}\n"
+                        f"Повтори: /retry {task_id[:8]}"
+                    )
+                    return
+                logger.warning(
+                    "run_worker_cycle: crash attempt=%d, retry in %ds task_id=%s",
+                    attempt, retry_delay, task_id,
+                )
+                await asyncio.sleep(retry_delay)
+                # use_correction остаётся False → следующая попытка с полным промптом
+                continue
 
-        if not valid or parsed is None:
-            logger.error(
-                "run_worker_cycle: invalid json task_id=%s err=%s", task_id, err,
+            # Парсим и валидируем JSON
+            parsed = extract_json(stdout)
+            valid, err = validate_worker_schema(parsed) if parsed else (False, "no JSON")
+
+            log_run(
+                task_id=task_id,
+                phase="worker",
+                stdout=stdout,
+                stderr="",
+                parsed_json=parsed,
+                json_valid=valid,
+                worker_id=worker_id,
+                db_path=db_path,
             )
-            release_lease(task_id, worker_id, token, "error", db_path=db_path)
-            await tg_handler.notify_owner(f"task#{task_id[:8]}: невалидный JSON от воркера.")
-            return
 
-        # Обрабатываем статус
-        worker_status = parsed.get("status", "error")
-        confidence = parsed.get("confidence", 0)
-        conf_threshold = int(worker_cfg.get("confidence_threshold",
-                             config.get("supervisor", {}).get("confidence_threshold", 70)))
+            if not valid:
+                logger.warning(
+                    "run_worker_cycle: invalid json attempt=%d/%d task_id=%s err=%s",
+                    attempt, max_attempts, task_id, err,
+                )
+                if is_last:
+                    reason = "json_invalid" if parsed is None else "json_schema_invalid"
+                    _fail_final(reason, "")
+                    await tg_handler.notify_owner(
+                        f"⚠️ task#{task_id[:8]}: воркер не дал JSON {max_attempts}× "
+                        f"({err}).\nПовтори: /retry {task_id[:8]}"
+                    )
+                    return
+                use_correction = True  # следующая попытка — коррекционный промпт
+                logger.warning(
+                    "run_worker_cycle: retrying with correction attempt=%d task_id=%s",
+                    attempt, task_id,
+                )
+                continue
 
-        if worker_status == "done" and confidence >= conf_threshold:
-            release_lease(task_id, worker_id, token, "done", db_path=db_path)
-            notes = parsed.get("result", {}).get("notes", "")
-            await tg_handler.notify_owner(
-                f"task#{task_id[:8]}: DONE ✓ (confidence={confidence})\n{notes[:200]}"
+            # JSON валидный — обрабатываем статус воркера
+            worker_status = parsed.get("status", "error")
+            confidence = parsed.get("confidence", 0)
+            conf_threshold = int(
+                worker_cfg.get(
+                    "confidence_threshold",
+                    config.get("supervisor", {}).get("confidence_threshold", 70),
+                )
             )
-            logger.info("run_worker_cycle: done task_id=%s", task_id)
+            attempt_note = f" (попытка {attempt}/{max_attempts})" if attempt > 1 else ""
 
-        elif worker_status == "blocked" or (worker_status == "done" and confidence < conf_threshold):
-            release_lease(task_id, worker_id, token, "blocked", db_path=db_path)
-            question = parsed.get("question") or f"confidence={confidence} < {conf_threshold}"
-            await tg_handler.notify_owner(f"task#{task_id[:8]}: BLOCKED. {question}")
-            logger.warning("run_worker_cycle: blocked task_id=%s", task_id)
+            if worker_status == "done" and confidence >= conf_threshold:
+                release_lease(task_id, worker_id, token, "done", db_path=db_path)
+                notes = parsed.get("result", {}).get("notes", "")
+                await tg_handler.notify_owner(
+                    f"task#{task_id[:8]}: DONE ✓ (confidence={confidence}){attempt_note}\n"
+                    f"{notes[:200]}"
+                )
+                logger.info("run_worker_cycle: done task_id=%s", task_id)
 
-        else:  # "error" или неизвестный статус
-            release_lease(task_id, worker_id, token, "error", db_path=db_path)
-            await tg_handler.notify_owner(f"task#{task_id[:8]}: ERROR (status={worker_status})")
-            logger.error("run_worker_cycle: error task_id=%s status=%s", task_id, worker_status)
+            elif worker_status == "blocked" or (
+                worker_status == "done" and confidence < conf_threshold
+            ):
+                release_lease(task_id, worker_id, token, "blocked", db_path=db_path)
+                question = (
+                    parsed.get("question") or f"confidence={confidence} < {conf_threshold}"
+                )
+                await tg_handler.notify_owner(
+                    f"task#{task_id[:8]}: BLOCKED{attempt_note}. {question}\n"
+                    f"Повтори: /retry {task_id[:8]}"
+                )
+                logger.warning("run_worker_cycle: blocked task_id=%s", task_id)
+
+            else:  # "error" от воркера — exhausted, финальный сбой
+                _fail_final("worker_crash", "")
+                await tg_handler.notify_owner(
+                    f"⚠️ task#{task_id[:8]}: воркер вернул error{attempt_note}.\n"
+                    f"Повтори: /retry {task_id[:8]}"
+                )
+                logger.error(
+                    "run_worker_cycle: worker_error task_id=%s status=%s",
+                    task_id, worker_status,
+                )
+
+            return  # цикл завершён (done / blocked / requires_manual)
 
     except Exception as exc:
         logger.error("run_worker_cycle: unexpected error task_id=%s: %s", task_id, exc)
+        _set_error_reason("worker_crash")
         try:
-            release_lease(task_id, worker_id, token, "error", db_path=db_path)
+            release_lease(task_id, worker_id, token, "requires_manual", db_path=db_path)
         except Exception:
             pass
 
@@ -400,10 +558,21 @@ async def main() -> None:
     # Настройка логирования
     log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
     log_level = getattr(logging, log_level_str, logging.INFO)
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    log_fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
+
+    logging.basicConfig(level=log_level, format=log_fmt)
+
+    # Файловый лог — ротация 10 МБ × 5 файлов
+    logs_dir = Path("logs")
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.handlers.RotatingFileHandler(
+        logs_dir / "supervisor.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
     )
+    file_handler.setFormatter(logging.Formatter(log_fmt))
+    logging.getLogger().addHandler(file_handler)
 
     logger.info("Supervisor starting (PID=%d)", os.getpid())
 
@@ -459,7 +628,7 @@ async def main() -> None:
             name="heartbeat",
         ),
         asyncio.create_task(
-            telegram_polling_loop(tg_handler, interval=poll_interval),
+            telegram_polling_loop(tg_handler, interval=1),  # long polling — не ждём poll_interval
             name="tg_polling",
         ),
         asyncio.create_task(
