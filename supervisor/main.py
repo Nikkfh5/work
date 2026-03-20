@@ -293,7 +293,7 @@ async def run_worker_cycle(
         except Exception as _e:
             logger.warning("run_worker_cycle: could not set error reason: %s", _e)
 
-    def _fail_final(reason: str, message: str) -> None:
+    def _fail_final(reason: str) -> None:
         """Финальный сбой после всех попыток → requires_manual + TG."""
         _set_error_reason(reason)
         release_lease(task_id, worker_id, token, "requires_manual", db_path=db_path)
@@ -331,14 +331,14 @@ async def run_worker_cycle(
                     alias = repo["alias"]
                     url = repo["url"]
                     token_env = repo.get("token_env", "")
-                    git_token = os.getenv(token_env, "") if token_env else None
+                    git_token = os.getenv(token_env) if token_env else None
 
                     repo_mgr.ensure_mirror(
                         job,
                         alias,
                         url,
                         clone_strategy=repo.get("clone_strategy", "mirror"),
-                        token=git_token or None,
+                        token=git_token,
                     )
 
                     branch = branch_pattern.replace("{task_id}", task_id)
@@ -356,7 +356,7 @@ async def run_worker_cycle(
                     task_id,
                     exc,
                 )
-                _fail_final("worker_crash", str(exc))
+                _fail_final("worker_crash")
                 await tg_handler.notify_owner(
                     f"⚠️ task#{task_id[:8]}: не удалось подготовить worktree.\n"
                     f"{str(exc)[:150]}"
@@ -394,7 +394,7 @@ async def run_worker_cycle(
                     attempt,
                     task_id,
                 )
-                _fail_final("safeexec_timeout", "")
+                _fail_final("safeexec_timeout")
                 await tg_handler.notify_owner(
                     f"⚠️ task#{task_id[:8]}: таймаут воркера.\n"
                     f"Повтори: /retry {task_id[:8]}"
@@ -408,7 +408,7 @@ async def run_worker_cycle(
                     exc,
                 )
                 if is_last:
-                    _fail_final("worker_crash", "")
+                    _fail_final("worker_crash")
                     await tg_handler.notify_owner(
                         f"⚠️ task#{task_id[:8]}: воркер упал {max_attempts}× подряд.\n"
                         f"{str(exc)[:150]}\n"
@@ -452,7 +452,7 @@ async def run_worker_cycle(
                 )
                 if is_last:
                     reason = "json_invalid" if parsed is None else "json_schema_invalid"
-                    _fail_final(reason, "")
+                    _fail_final(reason)
                     await tg_handler.notify_owner(
                         f"⚠️ task#{task_id[:8]}: воркер не дал JSON {max_attempts}× "
                         f"({err}).\nПовтори: /retry {task_id[:8]}"
@@ -501,7 +501,7 @@ async def run_worker_cycle(
                 logger.warning("run_worker_cycle: blocked task_id=%s", task_id)
 
             else:  # "error" от воркера — exhausted, финальный сбой
-                _fail_final("worker_crash", "")
+                _fail_final("worker_crash")
                 await tg_handler.notify_owner(
                     f"⚠️ task#{task_id[:8]}: воркер вернул error{attempt_note}.\n"
                     f"Повтори: /retry {task_id[:8]}"
