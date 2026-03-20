@@ -1,0 +1,96 @@
+# Progress Tracker
+
+## Текущий статус
+
+| Параметр | Значение |
+|----------|----------|
+| Активная фаза | 2 |
+| Тесты (всего) | 221 |
+| Тесты (статус) | ✅ все зелёные |
+| Последнее обновление | 2026-03-21 |
+
+---
+
+## Фаза 0 — Safety & Determinism ✅ ЗАВЕРШЕНА
+
+- [x] `supervisor/log_utils.py` — redact() для секретов (8 тестов)
+- [x] `storage/migrate.py` — schema versioning, 15 миграций (8 тестов)
+- [x] `supervisor/config_validator.py` — fail-fast agents.yaml (15 тестов)
+- [x] `supervisor/lease_manager.py` — атомарный захват + lease_token (12 тестов)
+- [x] `supervisor/json_guard.py` — парсинг/валидация JSON (38 тестов)
+- [x] `supervisor/run_logger.py` — запись файлов + task_runs (8 тестов)
+- [x] `supervisor/safe_exec.py` — allowlist runner + realpath (16 тестов)
+- [x] `supervisor/repo_manager.py` — bare mirror + worktree + symlink (14 тестов)
+- [x] `supervisor/hooks/guard_bash.py` — Claude hook read-only (44 теста)
+
+## Фаза 1 — Telegram/Email + main.py ✅ ЗАВЕРШЕНА
+
+- [x] `integrations/telegram_handler.py` — polling + dedup + commands (24 теста)
+- [x] `integrations/email_handler.py` — IMAP + Message-ID dedup (17 тестов)
+- [x] `supervisor/main.py` — asyncio event loop + scheduling (28 тестов)
+
+## Фаза 2 — Воркер-цикл ⏳ В ОЧЕРЕДИ
+
+- [ ] `workers/job1_worker/CLAUDE.md` — CLAUDE.md шаблон для воркера с Context7 правилом
+- [ ] `workers/job1_worker/.mcp.json` — Context7 MCP подключение
+- [ ] `workers/job1_worker/.claude/settings.json` — PreToolUse hook → guard_bash.py
+- [ ] `run_worker_cycle()` в `supervisor/main.py` — lease → worktree → claude CLI → json_guard → обработка результата
+- [ ] `tests/test_worker_cycle.py` — задача → JSON с маркерами → parse OK → state transition
+
+## Фаза 3 — Code review ⏳ В ОЧЕРЕДИ
+
+- [ ] `workers/job1_reviewer/CLAUDE.md` — шаблон для ревьюера
+- [ ] `workers/job1_reviewer/.mcp.json` — Context7 MCP
+- [ ] Итерации с structured feedback (APPROVED / NEEDS_CHANGES + comments)
+- [ ] safe_exec: ci_policy → commit → push
+- [ ] `tests/test_review_cycle.py` — bug → NEEDS_CHANGES → fix → APPROVED → git push
+
+## Фаза 4 — Эскалация + pending_approval ⏳ В ОЧЕРЕДИ
+
+- [ ] `supervisor/escalation.py` — 5 сценариев эскалации
+- [ ] pending_approval flow (/approve, /reject через TG)
+- [ ] `tests/test_escalation.py` — тест каждого сценария
+
+## Фаза 5 — Notion + summarizer ⏳ В ОЧЕРЕДИ
+
+- [ ] `integrations/notion_handler.py` — создание/обновление страниц с fallback
+- [ ] Обновить уведомления: TG коротко + Notion подробно
+- [ ] `supervisor/summarizer.py` — daily summary + scheduler
+- [ ] `tests/test_notion_handler.py`, `tests/test_summarizer.py`
+
+## Фаза 6 — Health Monitor ⏳ В ОЧЕРЕДИ
+
+- [ ] `supervisor/health_monitor.py` — build_snapshot + run_health_check + run_health_task
+- [ ] `workers/health_monitor/CLAUDE.md` — шаблон для health агента
+- [ ] Scheduler в main.py (health_check_hour_utc)
+- [ ] auto_actions через safe_exec
+- [ ] `tests/test_health_monitor.py`
+
+## Фаза 7 — Docker + VPS deploy ⏳ В ОЧЕРЕДИ
+
+- [ ] `docker-compose.yml` с HEALTHCHECK
+- [ ] `Dockerfile` (Python + claude CLI + user 1000)
+- [ ] `Makefile` (setup-mcp, test, run, logs, deploy)
+- [ ] Деплой + верификация
+
+---
+
+## Журнал решений
+
+| Дата | Фаза | Решение | Причина |
+|------|------|---------|---------|
+| 2026-02 | 0 | 15 миграций в migrate.py | Идемпотентность + версионирование |
+| 2026-02 | 0 | lease_token UUID | Защита от stale owner |
+| 2026-02 | 1 | kv_store для TG offset | Простота vs отдельная таблица |
+| 2026-02 | 1 | asyncio_mode=auto в pytest.ini | pytest-asyncio требует |
+| 2026-02 | 1 | os.environ["DB_PATH"] в фикстуре | Паттерн изоляции тестов |
+
+## Блокеры
+
+_Нет активных блокеров._
+
+## Заметки для ретроспективы
+
+- После каждой фазы: re-design review на основе опыта
+- Рефакторинг после Фазы 2 (из заметок пользователя)
+- Рассмотреть: sequential thinking MCP, filesystem MCP, wcgw MCP

@@ -34,9 +34,9 @@ workers:
     model: claude-opus-4-6
     lang: python
     display_name: "Job 1 Python Worker"
-    telegram_contact: "@owner_username"    # заменить на @username владельца
-    email: "owner@example.com"             # заменить на реальный email
-    active: false                          # включить после настройки .env
+    telegram_contact: "@voidnyan"    # заменить на @username владельца
+    email: "v-353@yandex.com"             # заменить на реальный email
+    active: true                          # включить после настройки .env
     confidence_threshold: 75
     max_review_iterations: 3
     max_attempts: 3

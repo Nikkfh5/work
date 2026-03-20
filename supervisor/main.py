@@ -35,7 +35,6 @@ from storage.db import get_conn, init_db
 from storage.migrate import apply_migrations
 from supervisor.config_validator import load_and_validate
 from supervisor.lease_manager import acquire_lease, release_lease, release_stale
-from supervisor.log_utils import redact
 from supervisor.repo_manager import RepoManager
 
 logger = logging.getLogger(__name__)
@@ -48,6 +47,7 @@ _running_tasks: dict[str, asyncio.Task] = {}
 
 
 # ── Heartbeat ────────────────────────────────────────────────────────────────
+
 
 async def heartbeat_writer(
     path: str = "data/heartbeat.txt",
@@ -72,6 +72,7 @@ async def heartbeat_writer(
 
 
 # ── Polling loops ─────────────────────────────────────────────────────────────
+
 
 async def telegram_polling_loop(
     handler: TelegramHandler,
@@ -119,6 +120,7 @@ async def email_polling_loop(
 
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
+
 
 async def dispatch_pending_tasks(
     config: dict,
@@ -172,6 +174,7 @@ async def dispatch_pending_tasks(
 
 
 # ── Worker cycle ──────────────────────────────────────────────────────────────
+
 
 def _build_worker_prompt(description: str) -> str:
     """
@@ -245,15 +248,21 @@ async def run_worker_cycle(
     config: dict,
     tg_handler: TelegramHandler,
     db_path: Optional[str] = None,
+    repo_manager: Optional[RepoManager] = None,
 ) -> None:
     """
-    Полный цикл выполнения задачи с retry: lease → попытки → json → notify.
+    Полный цикл выполнения задачи: lease → worktrees → попытки → json → notify → cleanup.
+
+    Worktree-стратегия (repos из agents.yaml):
+      - ensure_mirror: клон/обновление bare mirror
+      - prepare_worktree: изолированная копия + симлинк в workspace воркера
+      - cleanup_worktree: удаление после завершения (в finally)
 
     Retry-стратегия (max_attempts из agents.yaml):
       - ClaudeRunnerError (crash): повтор с тем же промптом
       - json_invalid / json_schema_invalid: повтор с коррекционным промптом
       - safeexec_timeout: не ретраить (таймаут повторится)
-    Reviewer cycle, Notion, escalation — Фаза 2.
+    Reviewer cycle, Notion, escalation — Фаза 3+.
     """
     from supervisor.claude_runner import ClaudeRunnerError, run_claude
     from supervisor.json_guard import extract_json, validate_worker_schema
@@ -289,20 +298,79 @@ async def run_worker_cycle(
         _set_error_reason(reason)
         release_lease(task_id, worker_id, token, "requires_manual", db_path=db_path)
         logger.error(
-            "run_worker_cycle: requires_manual task_id=%s reason=%s", task_id, reason,
+            "run_worker_cycle: requires_manual task_id=%s reason=%s",
+            task_id,
+            reason,
         )
-        # notify запускается в caller через await — здесь только синхронная часть
 
     worker_dir = str(Path("workers") / worker_id)
     last_stdout = ""
-    use_correction = False  # True после json_invalid — использовать коррекционный промпт
+    use_correction = (
+        False  # True после json_invalid — использовать коррекционный промпт
+    )
+
+    # ── Worktree setup ─────────────────────────────────────────────────────
+    repos = worker_cfg.get("repos", [])
+    job = (
+        worker_id.removesuffix("_worker")
+        if worker_id.endswith("_worker")
+        else worker_id
+    )
+    branching = worker_cfg.get("branching_policy", {})
+    branch_pattern = branching.get("pattern", "ai/task-{task_id}")
+    base_branch = branching.get("base", "main")
+
+    repo_mgr = repo_manager or RepoManager()
+    worktree_aliases: list[str] = []
 
     try:
+        # Setup worktrees для каждого репо
+        if repos:
+            try:
+                for repo in repos:
+                    alias = repo["alias"]
+                    url = repo["url"]
+                    token_env = repo.get("token_env", "")
+                    git_token = os.getenv(token_env, "") if token_env else None
+
+                    repo_mgr.ensure_mirror(
+                        job,
+                        alias,
+                        url,
+                        clone_strategy=repo.get("clone_strategy", "mirror"),
+                        token=git_token or None,
+                    )
+
+                    branch = branch_pattern.replace("{task_id}", task_id)
+                    repo_mgr.prepare_worktree(task_id, job, alias, branch, base_branch)
+                    worktree_aliases.append(alias)
+
+                logger.info(
+                    "run_worker_cycle: worktrees ready task_id=%s repos=%s",
+                    task_id,
+                    [r["alias"] for r in repos],
+                )
+            except Exception as exc:
+                logger.error(
+                    "run_worker_cycle: worktree setup failed task_id=%s: %s",
+                    task_id,
+                    exc,
+                )
+                _fail_final("worker_crash", str(exc))
+                await tg_handler.notify_owner(
+                    f"⚠️ task#{task_id[:8]}: не удалось подготовить worktree.\n"
+                    f"{str(exc)[:150]}"
+                )
+                return  # finally cleanup will still run
+
+        # ── Retry loop ─────────────────────────────────────────────────────
         for attempt in range(1, max_attempts + 1):
-            is_last = (attempt == max_attempts)
+            is_last = attempt == max_attempts
             logger.info(
                 "run_worker_cycle: attempt %d/%d task_id=%s",
-                attempt, max_attempts, task_id,
+                attempt,
+                max_attempts,
+                task_id,
             )
 
             # Промпт:
@@ -316,11 +384,15 @@ async def run_worker_cycle(
 
             # Запустить claude CLI
             try:
-                stdout = await run_claude(prompt, cwd=worker_dir, timeout=worker_timeout)
+                stdout = await run_claude(
+                    prompt, cwd=worker_dir, timeout=worker_timeout
+                )
                 last_stdout = stdout
             except asyncio.TimeoutError:
                 logger.error(
-                    "run_worker_cycle: timeout attempt=%d task_id=%s", attempt, task_id,
+                    "run_worker_cycle: timeout attempt=%d task_id=%s",
+                    attempt,
+                    task_id,
                 )
                 _fail_final("safeexec_timeout", "")
                 await tg_handler.notify_owner(
@@ -331,7 +403,9 @@ async def run_worker_cycle(
             except ClaudeRunnerError as exc:
                 logger.error(
                     "run_worker_cycle: claude error attempt=%d task_id=%s: %s",
-                    attempt, task_id, exc,
+                    attempt,
+                    task_id,
+                    exc,
                 )
                 if is_last:
                     _fail_final("worker_crash", "")
@@ -343,7 +417,9 @@ async def run_worker_cycle(
                     return
                 logger.warning(
                     "run_worker_cycle: crash attempt=%d, retry in %ds task_id=%s",
-                    attempt, retry_delay, task_id,
+                    attempt,
+                    retry_delay,
+                    task_id,
                 )
                 await asyncio.sleep(retry_delay)
                 # use_correction остаётся False → следующая попытка с полным промптом
@@ -351,7 +427,9 @@ async def run_worker_cycle(
 
             # Парсим и валидируем JSON
             parsed = extract_json(stdout)
-            valid, err = validate_worker_schema(parsed) if parsed else (False, "no JSON")
+            valid, err = (
+                validate_worker_schema(parsed) if parsed else (False, "no JSON")
+            )
 
             log_run(
                 task_id=task_id,
@@ -367,7 +445,10 @@ async def run_worker_cycle(
             if not valid:
                 logger.warning(
                     "run_worker_cycle: invalid json attempt=%d/%d task_id=%s err=%s",
-                    attempt, max_attempts, task_id, err,
+                    attempt,
+                    max_attempts,
+                    task_id,
+                    err,
                 )
                 if is_last:
                     reason = "json_invalid" if parsed is None else "json_schema_invalid"
@@ -380,7 +461,8 @@ async def run_worker_cycle(
                 use_correction = True  # следующая попытка — коррекционный промпт
                 logger.warning(
                     "run_worker_cycle: retrying with correction attempt=%d task_id=%s",
-                    attempt, task_id,
+                    attempt,
+                    task_id,
                 )
                 continue
 
@@ -409,7 +491,8 @@ async def run_worker_cycle(
             ):
                 release_lease(task_id, worker_id, token, "blocked", db_path=db_path)
                 question = (
-                    parsed.get("question") or f"confidence={confidence} < {conf_threshold}"
+                    parsed.get("question")
+                    or f"confidence={confidence} < {conf_threshold}"
                 )
                 await tg_handler.notify_owner(
                     f"task#{task_id[:8]}: BLOCKED{attempt_note}. {question}\n"
@@ -425,7 +508,8 @@ async def run_worker_cycle(
                 )
                 logger.error(
                     "run_worker_cycle: worker_error task_id=%s status=%s",
-                    task_id, worker_status,
+                    task_id,
+                    worker_status,
                 )
 
             return  # цикл завершён (done / blocked / requires_manual)
@@ -438,8 +522,22 @@ async def run_worker_cycle(
         except Exception:
             pass
 
+    finally:
+        # ── Worktree cleanup ───────────────────────────────────────────────
+        for alias in worktree_aliases:
+            try:
+                repo_mgr.cleanup_worktree(task_id, job, alias)
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "run_worker_cycle: cleanup failed task_id=%s alias=%s: %s",
+                    task_id,
+                    alias,
+                    cleanup_exc,
+                )
+
 
 # ── Scheduled tasks ───────────────────────────────────────────────────────────
+
 
 async def schedule_at(
     hour_utc: int,
@@ -502,6 +600,7 @@ async def schedule_periodic(
 
 # ── Housekeeping ──────────────────────────────────────────────────────────────
 
+
 async def nightly_housekeeping(db_path: Optional[str] = None) -> None:
     """Ночная уборка: stale leases + старые worktrees."""
     logger.info("nightly_housekeeping: start")
@@ -518,6 +617,7 @@ async def nightly_housekeeping(db_path: Optional[str] = None) -> None:
 
 # ── Stubs (Фаза 2) ────────────────────────────────────────────────────────────
 
+
 async def run_daily_summary(tg_handler: TelegramHandler) -> None:
     """Ежедневный дайджест — stub, реализуется в Фазе 2."""
     logger.info("run_daily_summary: stub — Phase 2")
@@ -533,6 +633,7 @@ async def run_health_check(
 
 # ── Signal handling ───────────────────────────────────────────────────────────
 
+
 def _setup_signal_handlers(shutdown_event: Optional[asyncio.Event] = None) -> None:
     """Установить SIGTERM/SIGINT для graceful shutdown."""
     ev = shutdown_event or _shutdown_event
@@ -546,6 +647,7 @@ def _setup_signal_handlers(shutdown_event: Optional[asyncio.Event] = None) -> No
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
 
 async def main() -> None:
     """
@@ -595,6 +697,7 @@ async def main() -> None:
     poll_interval = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
 
     from supervisor.router import Router
+
     router = Router()
 
     tg_handler = TelegramHandler(
@@ -628,7 +731,9 @@ async def main() -> None:
             name="heartbeat",
         ),
         asyncio.create_task(
-            telegram_polling_loop(tg_handler, interval=1),  # long polling — не ждём poll_interval
+            telegram_polling_loop(
+                tg_handler, interval=1
+            ),  # long polling — не ждём poll_interval
             name="tg_polling",
         ),
         asyncio.create_task(
@@ -644,7 +749,9 @@ async def main() -> None:
             name="daily_summary",
         ),
         asyncio.create_task(
-            schedule_periodic(health_hour, health_days, lambda: run_health_check(tg_handler, db_path)),
+            schedule_periodic(
+                health_hour, health_days, lambda: run_health_check(tg_handler, db_path)
+            ),
             name="health_check",
         ),
         asyncio.create_task(
