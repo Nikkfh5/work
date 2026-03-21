@@ -56,25 +56,23 @@ supervisor/repo_manager.py   bare mirror + worktree + symlink per task
 supervisor/hooks/guard_bash  read-only Bash guard для воркеров
 integrations/*_handler.py   только внешний транспорт (TG, Email, Notion)
 supervisor/main.py           asyncio orchestration, не бизнес-логика
+plans/conductor.md           автономный протокол дирижёра
+plans/progress.md            трекер прогресса + backlog рефакторинга
 ```
 
 ---
 
-## Порядок реализации (Фаза 0 — первая)
+## Статус реализации
 
-```
-1. log_utils.py       ← ПЕРВЫМ: логи не должны течь с самого старта
-2. migrate.py
-3. config_validator.py
-4. lease_manager.py
-5. json_guard.py
-6. run_logger.py
-7. safe_exec.py
-8. repo_manager.py
-9. guard_bash.py + settings.json
-```
+| Фаза | Статус | Модули |
+|------|--------|--------|
+| 0 Safety | ✅ Done | log_utils, migrate, config_validator, lease_manager, json_guard, run_logger, safe_exec, repo_manager, guard_bash |
+| 1 Inputs | ✅ Done | telegram_handler, email_handler, main.py |
+| 2 Worker | ✅ Done | worker CLAUDE.md/MCP/hooks, run_worker_cycle (worktree) |
+| 3 Review | ⏳ Next | reviewer CLAUDE.md, итерации, ci → push |
+| 4-7 | ⏳ | escalation, notion, health, docker |
 
-Не перескакивать. Не начинать main.py раньше Фазы 0.
+Детали: `plans/progress.md`. Backlog рефакторинга там же.
 
 ---
 
@@ -173,7 +171,9 @@ logger.error("lease_conflict task_id=%s worker=%s", task_id, worker_id)
 
 Запускать после каждого модуля:
 ```bash
-pytest tests/ -v
+pytest tests/ -v        # 229 тестов, все зелёные
+ruff check .            # линтинг
+ruff format --check .   # форматирование
 ```
 
 ---

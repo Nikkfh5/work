@@ -5,7 +5,7 @@
 | Параметр | Значение |
 |----------|----------|
 | Активная фаза | 2 |
-| Тесты (всего) | 221 |
+| Тесты (всего) | 229 |
 | Тесты (статус) | ✅ все зелёные |
 | Последнее обновление | 2026-03-21 |
 
@@ -31,11 +31,11 @@
 
 ## Фаза 2 — Воркер-цикл ⏳ В ОЧЕРЕДИ
 
-- [ ] `workers/job1_worker/CLAUDE.md` — CLAUDE.md шаблон для воркера с Context7 правилом
-- [ ] `workers/job1_worker/.mcp.json` — Context7 MCP подключение
-- [ ] `workers/job1_worker/.claude/settings.json` — PreToolUse hook → guard_bash.py
-- [ ] `run_worker_cycle()` в `supervisor/main.py` — lease → worktree → claude CLI → json_guard → обработка результата
-- [ ] `tests/test_worker_cycle.py` — задача → JSON с маркерами → parse OK → state transition
+- [x] `workers/job1_worker/CLAUDE.md` — CLAUDE.md шаблон для воркера с Context7 правилом (8 тестов)
+- [x] `workers/job1_worker/.mcp.json` — Context7 MCP подключение
+- [x] `workers/job1_worker/.claude/settings.json` — PreToolUse hook → guard_bash.py
+- [x] `run_worker_cycle()` в `supervisor/main.py` — lease → worktree → claude CLI → json_guard → cleanup
+- [x] `tests/test_worker_cycle.py` — worktree setup/cleanup/error/multi-repo (8 тестов)
 
 ## Фаза 3 — Code review ⏳ В ОЧЕРЕДИ
 
@@ -89,8 +89,35 @@
 
 _Нет активных блокеров._
 
+## Backlog рефакторинга (собрано после Фазы 2)
+
+### Высокий приоритет (перед Фазой 3)
+- [ ] Создать `tests/conftest.py` — shared fixtures: `db_path`, `mock_tg_handler`, `_make_task()`, `WORKER_DONE_JSON` (дублируются в 7 файлах)
+- [ ] Использовать константы ошибок (`E_WORKER_CRASH` и т.д.) вместо строковых литералов в main.py (9 мест)
+
+### Средний приоритет (после Фазы 3)
+- [ ] Декомпозировать `run_worker_cycle()` (290 строк) — вынести: `_setup_worktrees()`, `_notify_failure()`, worktree setup/cleanup
+- [ ] `_fail_final` — включить TG-уведомление внутрь (сейчас каждый call site дублирует notify)
+- [ ] 5 copy-paste блоков TG-уведомлений → один `_notify_failure(tg, task_id, msg)` helper
+- [ ] `_set_error_reason` — вынести в db.py как `update_task_error_reason()` (нужно одобрение, protected file)
+- [ ] `SELECT *` в dispatch → `SELECT id, assigned_worker, description`
+
+### Низкий приоритет (после стабилизации)
+- [ ] `repo_manager._run_git` → async (asyncio.create_subprocess_exec) чтобы не блокировать event loop
+- [ ] Параллельный setup worktrees для N repos (asyncio.gather + run_in_executor)
+- [ ] `os.getenv` в run_worker_cycle → передавать через config (DI)
+- [ ] Добавить тест на cleanup_worktree failure (finally block в main.py)
+- [ ] `_make_task()` → возвращать полный dict из DB, не хардкодить поля
+
+### Идеи (обсудить на brainstorm)
+- [ ] Workspace path в промпте воркера (чтобы знал куда писать код)
+- [ ] Git push в worker cycle (ci_policy → commit → push через safe_exec) — задача Фазы 3
+- [ ] sequential thinking MCP, filesystem MCP, wcgw MCP
+- [ ] Декомпозиция main.py → отдельный `supervisor/worker_cycle.py`
+
 ## Заметки для ретроспективы
 
 - После каждой фазы: re-design review на основе опыта
 - Рефакторинг после Фазы 2 (из заметок пользователя)
-- Рассмотреть: sequential thinking MCP, filesystem MCP, wcgw MCP
+- /simplify нашёл 2 бага (dead param, double coercion) — исправлены
+- /code-check: все инварианты соблюдены, 3 minor замечания записаны в backlog
