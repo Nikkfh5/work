@@ -182,21 +182,33 @@ async def dispatch_pending_tasks(
 # ── Worker cycle ──────────────────────────────────────────────────────────────
 
 
-def _build_worker_prompt(description: str) -> str:
+def _build_worker_prompt(
+    description: str,
+    task_id: str = "",
+    repos_context: Optional[list[dict]] = None,
+    branch: str = "",
+) -> str:
     """
-    Собрать полный промпт для воркера: задание + обязательный JSON-вывод.
+    Собрать полный промпт для воркера: задание + workspace context + JSON-вывод.
 
-    Инструкция по формату идёт в промпт (не только в CLAUDE.md), потому что
-    claude --print выполняет одиночный запрос без интерактива — CLAUDE.md служит
-    контекстом, но явная инструкция в промпте надёжнее.
+    repos_context: [{"alias": "api", "path": "workspace/{task_id}/api"}]
     """
+    # Контекст рабочей директории
+    workspace_section = ""
+    if repos_context:
+        lines = [f"Task ID: {task_id}", f"Ветка: {branch}", "Репозитории:"]
+        for repo in repos_context:
+            lines.append(f"  - {repo['alias']}: {repo['path']}")
+        lines.append("Работай ТОЛЬКО в этих директориях. Не выходи за их пределы.")
+        workspace_section = "\n".join(lines) + "\n\n"
+
     return f"""\
 Задание от супервайзора:
 
 {description}
 
 ─────────────────────────────────────────────
-ОБЯЗАТЕЛЬНО: после выполнения задания выведи результат СТРОГО в этом формате
+{workspace_section}ОБЯЗАТЕЛЬНО: после выполнения задания выведи результат СТРОГО в этом формате
 (без лишнего текста после <<<END>>>):
 
 <<<JSON>>>
@@ -204,7 +216,7 @@ def _build_worker_prompt(description: str) -> str:
   "status": "done",
   "confidence": <целое число 0-100>,
   "result": {{
-    "repos": [],
+    "repos": [{", ".join(f'{{"alias": "{r["alias"]}", "changed_files": [...], "entrypoint": null}}' for r in (repos_context or []))}],
     "notes": "<что именно сделано, одна-две строки>"
   }},
   "question": null
@@ -478,7 +490,25 @@ async def run_worker_cycle(
             if use_correction and last_stdout:
                 prompt = _build_json_correction_prompt(last_stdout)
             else:
-                prompt = _build_worker_prompt(task["description"])
+                # Контекст рабочих директорий для воркера
+                repos_context = (
+                    [
+                        {
+                            "alias": r["alias"],
+                            "path": f"workspace/{task_id}/{r['alias']}",
+                        }
+                        for r in repos
+                    ]
+                    if repos
+                    else None
+                )
+                branch = branch_pattern.replace("{task_id}", task_id) if repos else ""
+                prompt = _build_worker_prompt(
+                    task["description"],
+                    task_id=task_id,
+                    repos_context=repos_context,
+                    branch=branch,
+                )
             use_correction = False
 
             # Запустить claude CLI
