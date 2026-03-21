@@ -7,32 +7,17 @@ tests/test_email_handler.py — тесты для integrations/email_handler.py
 Все тесты синхронные (EmailHandler — синхронный класс).
 """
 
-import email as email_module
 import imaplib
-import os
 import pytest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from unittest.mock import MagicMock, patch
 
-from storage.db import init_db, get_conn
-from storage.migrate import apply_migrations
+from storage.db import get_conn
 from integrations.email_handler import EmailHandler
 
 
 # ── Фикстуры ─────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def db_path(tmp_path):
-    """Временная БД с полной схемой. Устанавливает DB_PATH env."""
-    path = str(tmp_path / "test.db")
-    os.environ["DB_PATH"] = path
-    init_db(path)
-    with get_conn(path) as conn:
-        apply_migrations(conn)
-    yield path
-    if "DB_PATH" in os.environ:
-        del os.environ["DB_PATH"]
 
 
 @pytest.fixture
@@ -90,6 +75,7 @@ def make_multipart_email(
 
 # ── Тесты: parse_email ────────────────────────────────────────────────────────
 
+
 def test_parse_email_simple(handler):
     """Простое письмо: subject, from, body, message_id парсятся."""
     raw = make_raw_email(
@@ -125,6 +111,7 @@ def test_parse_email_encoded_subject(handler):
     """Заголовок Subject в base64/quoted-printable декодируется."""
     # RFC 2047 encoded: =?utf-8?b?...?=
     import base64
+
     subject_text = "Задача для воркера"
     encoded = base64.b64encode(subject_text.encode("utf-8")).decode("ascii")
     raw = make_raw_email(
@@ -138,6 +125,7 @@ def test_parse_email_encoded_subject(handler):
 
 
 # ── Тесты: создание задачи ────────────────────────────────────────────────────
+
 
 def test_create_task_happy_path(handler, db_path, mock_router):
     """Письмо от известного контакта → задача в DB."""
@@ -193,6 +181,7 @@ def test_create_task_empty_from_returns_none(handler):
 
 # ── Тесты: идемпотентность ────────────────────────────────────────────────────
 
+
 def test_dedup_same_message_id_no_duplicate(handler, db_path, mock_router):
     """Повтор с тем же Message-ID → задача создаётся только один раз."""
     message_id = "<dedup-001@example.com>"
@@ -236,6 +225,7 @@ def test_mark_processed_is_idempotent(handler, db_path):
 
 
 # ── Тесты: poll_once с мок IMAP ──────────────────────────────────────────────
+
 
 def test_poll_once_processes_new_email(handler, db_path, mock_router):
     """poll_once с одним письмом → одна задача в DB."""
@@ -305,6 +295,7 @@ def test_poll_once_imap_error_returns_empty(handler):
 
 
 # ── Тесты: decode_header ─────────────────────────────────────────────────────
+
 
 def test_decode_header_plain(handler):
     """Простой заголовок без кодирования."""

@@ -9,37 +9,15 @@ tests/test_worker_cycle.py — тесты для worktree-интеграции �
 - Backward compatibility (без repos — worktree не создаётся)
 """
 
-import os
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from storage.db import init_db, get_conn, create_task
-from storage.migrate import apply_migrations
+from storage.db import get_conn, create_task
+from tests.conftest import WORKER_DONE_JSON
 
 
 # ── Фикстуры ──────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def db_path(tmp_path):
-    """Временная БД с полной схемой."""
-    path = str(tmp_path / "test.db")
-    os.environ["DB_PATH"] = path
-    init_db(path)
-    with get_conn(path) as conn:
-        apply_migrations(conn)
-    yield path
-    if "DB_PATH" in os.environ:
-        del os.environ["DB_PATH"]
-
-
-@pytest.fixture
-def mock_tg_handler():
-    """Мок TelegramHandler."""
-    handler = AsyncMock()
-    handler.notify_owner = AsyncMock(return_value=True)
-    return handler
 
 
 @pytest.fixture
@@ -86,18 +64,6 @@ def _config_with_repos():
             }
         },
     }
-
-
-WORKER_DONE_JSON = """\
-<<<JSON>>>
-{
-  "status": "done",
-  "confidence": 90,
-  "result": {"repos": [{"alias": "api", "changed_files": ["app.py"], "entrypoint": null}], "notes": "готово"},
-  "question": null
-}
-<<<END>>>
-"""
 
 
 # ── Тесты: worktree setup ─────────────────────────────────────────────────────

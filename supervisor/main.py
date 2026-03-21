@@ -39,6 +39,12 @@ from supervisor.repo_manager import RepoManager
 
 logger = logging.getLogger(__name__)
 
+# Коды ошибок (see CLAUDE.md)
+E_JSON_INVALID = "json_invalid"
+E_JSON_SCHEMA = "json_schema_invalid"
+E_SAFEEXEC_TIMEOUT = "safeexec_timeout"
+E_WORKER_CRASH = "worker_crash"
+
 # Событие для graceful shutdown (устанавливается обработчиком сигналов)
 _shutdown_event: asyncio.Event = asyncio.Event()
 
@@ -243,6 +249,137 @@ def _build_json_correction_prompt(previous_output: str) -> str:
 """
 
 
+def _set_error_reason(task_id: str, reason: str, db_path: Optional[str] = None) -> None:
+    """Записать last_error_reason в tasks для задачи."""
+    try:
+        with get_conn(db_path) as conn:
+            conn.execute(
+                "UPDATE tasks SET last_error_reason=? WHERE id=?",
+                (reason, task_id),
+            )
+    except Exception as _e:
+        logger.warning("_set_error_reason: could not set error reason: %s", _e)
+
+
+def _fail_final(
+    task_id: str,
+    worker_id: str,
+    token: str,
+    reason: str,
+    db_path: Optional[str] = None,
+) -> None:
+    """Финальный сбой после всех попыток -> requires_manual."""
+    _set_error_reason(task_id, reason, db_path)
+    release_lease(task_id, worker_id, token, "requires_manual", db_path=db_path)
+    logger.error(
+        "run_worker_cycle: requires_manual task_id=%s reason=%s",
+        task_id,
+        reason,
+    )
+
+
+def _setup_worktrees(
+    task_id: str,
+    job: str,
+    repos: list[dict],
+    branch_pattern: str,
+    base_branch: str,
+    repo_mgr: RepoManager,
+) -> list[str]:
+    """
+    Подготовить worktrees для каждого repo.
+
+    Returns: list[str] — worktree aliases, которые были успешно созданы.
+    Raises: Exception при ошибке (caller обработает).
+    """
+    worktree_aliases: list[str] = []
+    for repo in repos:
+        alias = repo["alias"]
+        url = repo["url"]
+        token_env = repo.get("token_env", "")
+        git_token = os.getenv(token_env) if token_env else None
+
+        repo_mgr.ensure_mirror(
+            job,
+            alias,
+            url,
+            clone_strategy=repo.get("clone_strategy", "mirror"),
+            token=git_token,
+        )
+
+        branch = branch_pattern.replace("{task_id}", task_id)
+        repo_mgr.prepare_worktree(task_id, job, alias, branch, base_branch)
+        worktree_aliases.append(alias)
+
+    logger.info(
+        "run_worker_cycle: worktrees ready task_id=%s repos=%s",
+        task_id,
+        [r["alias"] for r in repos],
+    )
+    return worktree_aliases
+
+
+async def _notify_failure(
+    tg_handler: TelegramHandler, task_id: str, message: str
+) -> None:
+    """Async helper: уведомить владельца об ошибке задачи."""
+    await tg_handler.notify_owner(
+        f"\u26a0\ufe0f task#{task_id[:8]}: {message}\nПовтори: /retry {task_id[:8]}"
+    )
+
+
+async def _handle_worker_result(
+    parsed: dict,
+    task_id: str,
+    worker_id: str,
+    token: str,
+    conf_threshold: int,
+    attempt: int,
+    max_attempts: int,
+    tg_handler: TelegramHandler,
+    db_path: Optional[str] = None,
+) -> None:
+    """Обработать валидный JSON результат воркера: done/blocked/error."""
+    worker_status = parsed.get("status", "error")
+    confidence = parsed.get("confidence", 0)
+    attempt_note = f" (попытка {attempt}/{max_attempts})" if attempt > 1 else ""
+
+    if worker_status == "done" and confidence >= conf_threshold:
+        release_lease(task_id, worker_id, token, "done", db_path=db_path)
+        notes = parsed.get("result", {}).get("notes", "")
+        await tg_handler.notify_owner(
+            f"task#{task_id[:8]}: DONE \u2713 (confidence={confidence}){attempt_note}\n"
+            f"{notes[:200]}"
+        )
+        logger.info("run_worker_cycle: done task_id=%s", task_id)
+
+    elif worker_status == "blocked" or (
+        worker_status == "done" and confidence < conf_threshold
+    ):
+        release_lease(task_id, worker_id, token, "blocked", db_path=db_path)
+        question = (
+            parsed.get("question") or f"confidence={confidence} < {conf_threshold}"
+        )
+        await tg_handler.notify_owner(
+            f"task#{task_id[:8]}: BLOCKED{attempt_note}. {question}\n"
+            f"Повтори: /retry {task_id[:8]}"
+        )
+        logger.warning("run_worker_cycle: blocked task_id=%s", task_id)
+
+    else:  # "error" от воркера — exhausted, финальный сбой
+        _fail_final(task_id, worker_id, token, E_WORKER_CRASH, db_path)
+        await _notify_failure(
+            tg_handler,
+            task_id,
+            f"воркер вернул error{attempt_note}.",
+        )
+        logger.error(
+            "run_worker_cycle: worker_error task_id=%s status=%s",
+            task_id,
+            worker_status,
+        )
+
+
 async def run_worker_cycle(
     task: dict,
     config: dict,
@@ -251,7 +388,7 @@ async def run_worker_cycle(
     repo_manager: Optional[RepoManager] = None,
 ) -> None:
     """
-    Полный цикл выполнения задачи: lease → worktrees → попытки → json → notify → cleanup.
+    Полный цикл выполнения задачи: lease -> worktrees -> попытки -> json -> notify -> cleanup.
 
     Worktree-стратегия (repos из agents.yaml):
       - ensure_mirror: клон/обновление bare mirror
@@ -283,31 +420,9 @@ async def run_worker_cycle(
         logger.warning("run_worker_cycle: lease conflict task_id=%s", task_id)
         return
 
-    def _set_error_reason(reason: str) -> None:
-        try:
-            with get_conn(db_path) as conn:
-                conn.execute(
-                    "UPDATE tasks SET last_error_reason=? WHERE id=?",
-                    (reason, task_id),
-                )
-        except Exception as _e:
-            logger.warning("run_worker_cycle: could not set error reason: %s", _e)
-
-    def _fail_final(reason: str) -> None:
-        """Финальный сбой после всех попыток → requires_manual + TG."""
-        _set_error_reason(reason)
-        release_lease(task_id, worker_id, token, "requires_manual", db_path=db_path)
-        logger.error(
-            "run_worker_cycle: requires_manual task_id=%s reason=%s",
-            task_id,
-            reason,
-        )
-
     worker_dir = str(Path("workers") / worker_id)
     last_stdout = ""
-    use_correction = (
-        False  # True после json_invalid — использовать коррекционный промпт
-    )
+    use_correction = False
 
     # ── Worktree setup ─────────────────────────────────────────────────────
     repos = worker_cfg.get("repos", [])
@@ -324,31 +439,10 @@ async def run_worker_cycle(
     worktree_aliases: list[str] = []
 
     try:
-        # Setup worktrees для каждого репо
         if repos:
             try:
-                for repo in repos:
-                    alias = repo["alias"]
-                    url = repo["url"]
-                    token_env = repo.get("token_env", "")
-                    git_token = os.getenv(token_env) if token_env else None
-
-                    repo_mgr.ensure_mirror(
-                        job,
-                        alias,
-                        url,
-                        clone_strategy=repo.get("clone_strategy", "mirror"),
-                        token=git_token,
-                    )
-
-                    branch = branch_pattern.replace("{task_id}", task_id)
-                    repo_mgr.prepare_worktree(task_id, job, alias, branch, base_branch)
-                    worktree_aliases.append(alias)
-
-                logger.info(
-                    "run_worker_cycle: worktrees ready task_id=%s repos=%s",
-                    task_id,
-                    [r["alias"] for r in repos],
+                worktree_aliases = _setup_worktrees(
+                    task_id, job, repos, branch_pattern, base_branch, repo_mgr
                 )
             except Exception as exc:
                 logger.error(
@@ -356,14 +450,21 @@ async def run_worker_cycle(
                     task_id,
                     exc,
                 )
-                _fail_final("worker_crash")
+                _fail_final(task_id, worker_id, token, E_WORKER_CRASH, db_path)
                 await tg_handler.notify_owner(
-                    f"⚠️ task#{task_id[:8]}: не удалось подготовить worktree.\n"
+                    f"\u26a0\ufe0f task#{task_id[:8]}: не удалось подготовить worktree.\n"
                     f"{str(exc)[:150]}"
                 )
-                return  # finally cleanup will still run
+                return
 
         # ── Retry loop ─────────────────────────────────────────────────────
+        conf_threshold = int(
+            worker_cfg.get(
+                "confidence_threshold",
+                config.get("supervisor", {}).get("confidence_threshold", 70),
+            )
+        )
+
         for attempt in range(1, max_attempts + 1):
             is_last = attempt == max_attempts
             logger.info(
@@ -373,14 +474,12 @@ async def run_worker_cycle(
                 task_id,
             )
 
-            # Промпт:
-            #   - json_invalid на прошлой попытке → коррекционный (показать что вышло)
-            #   - crash или первая попытка → полный промпт с заданием
+            # Промпт: json_invalid -> коррекционный, иначе полный
             if use_correction and last_stdout:
                 prompt = _build_json_correction_prompt(last_stdout)
             else:
                 prompt = _build_worker_prompt(task["description"])
-            use_correction = False  # сброс на каждой итерации
+            use_correction = False
 
             # Запустить claude CLI
             try:
@@ -394,12 +493,9 @@ async def run_worker_cycle(
                     attempt,
                     task_id,
                 )
-                _fail_final("safeexec_timeout")
-                await tg_handler.notify_owner(
-                    f"⚠️ task#{task_id[:8]}: таймаут воркера.\n"
-                    f"Повтори: /retry {task_id[:8]}"
-                )
-                return  # таймаут — не ретраить
+                _fail_final(task_id, worker_id, token, E_SAFEEXEC_TIMEOUT, db_path)
+                await _notify_failure(tg_handler, task_id, "таймаут воркера.")
+                return
             except ClaudeRunnerError as exc:
                 logger.error(
                     "run_worker_cycle: claude error attempt=%d task_id=%s: %s",
@@ -408,11 +504,11 @@ async def run_worker_cycle(
                     exc,
                 )
                 if is_last:
-                    _fail_final("worker_crash")
-                    await tg_handler.notify_owner(
-                        f"⚠️ task#{task_id[:8]}: воркер упал {max_attempts}× подряд.\n"
-                        f"{str(exc)[:150]}\n"
-                        f"Повтори: /retry {task_id[:8]}"
+                    _fail_final(task_id, worker_id, token, E_WORKER_CRASH, db_path)
+                    await _notify_failure(
+                        tg_handler,
+                        task_id,
+                        f"воркер упал {max_attempts}\u00d7 подряд.\n{str(exc)[:150]}",
                     )
                     return
                 logger.warning(
@@ -422,7 +518,6 @@ async def run_worker_cycle(
                     task_id,
                 )
                 await asyncio.sleep(retry_delay)
-                # use_correction остаётся False → следующая попытка с полным промптом
                 continue
 
             # Парсим и валидируем JSON
@@ -451,14 +546,15 @@ async def run_worker_cycle(
                     err,
                 )
                 if is_last:
-                    reason = "json_invalid" if parsed is None else "json_schema_invalid"
-                    _fail_final(reason)
-                    await tg_handler.notify_owner(
-                        f"⚠️ task#{task_id[:8]}: воркер не дал JSON {max_attempts}× "
-                        f"({err}).\nПовтори: /retry {task_id[:8]}"
+                    reason = E_JSON_INVALID if parsed is None else E_JSON_SCHEMA
+                    _fail_final(task_id, worker_id, token, reason, db_path)
+                    await _notify_failure(
+                        tg_handler,
+                        task_id,
+                        f"воркер не дал JSON {max_attempts}\u00d7 ({err}).",
                     )
                     return
-                use_correction = True  # следующая попытка — коррекционный промпт
+                use_correction = True
                 logger.warning(
                     "run_worker_cycle: retrying with correction attempt=%d task_id=%s",
                     attempt,
@@ -466,64 +562,29 @@ async def run_worker_cycle(
                 )
                 continue
 
-            # JSON валидный — обрабатываем статус воркера
-            worker_status = parsed.get("status", "error")
-            confidence = parsed.get("confidence", 0)
-            conf_threshold = int(
-                worker_cfg.get(
-                    "confidence_threshold",
-                    config.get("supervisor", {}).get("confidence_threshold", 70),
-                )
+            # JSON валидный — обработка результата
+            await _handle_worker_result(
+                parsed,
+                task_id,
+                worker_id,
+                token,
+                conf_threshold,
+                attempt,
+                max_attempts,
+                tg_handler,
+                db_path,
             )
-            attempt_note = f" (попытка {attempt}/{max_attempts})" if attempt > 1 else ""
-
-            if worker_status == "done" and confidence >= conf_threshold:
-                release_lease(task_id, worker_id, token, "done", db_path=db_path)
-                notes = parsed.get("result", {}).get("notes", "")
-                await tg_handler.notify_owner(
-                    f"task#{task_id[:8]}: DONE ✓ (confidence={confidence}){attempt_note}\n"
-                    f"{notes[:200]}"
-                )
-                logger.info("run_worker_cycle: done task_id=%s", task_id)
-
-            elif worker_status == "blocked" or (
-                worker_status == "done" and confidence < conf_threshold
-            ):
-                release_lease(task_id, worker_id, token, "blocked", db_path=db_path)
-                question = (
-                    parsed.get("question")
-                    or f"confidence={confidence} < {conf_threshold}"
-                )
-                await tg_handler.notify_owner(
-                    f"task#{task_id[:8]}: BLOCKED{attempt_note}. {question}\n"
-                    f"Повтори: /retry {task_id[:8]}"
-                )
-                logger.warning("run_worker_cycle: blocked task_id=%s", task_id)
-
-            else:  # "error" от воркера — exhausted, финальный сбой
-                _fail_final("worker_crash")
-                await tg_handler.notify_owner(
-                    f"⚠️ task#{task_id[:8]}: воркер вернул error{attempt_note}.\n"
-                    f"Повтори: /retry {task_id[:8]}"
-                )
-                logger.error(
-                    "run_worker_cycle: worker_error task_id=%s status=%s",
-                    task_id,
-                    worker_status,
-                )
-
-            return  # цикл завершён (done / blocked / requires_manual)
+            return
 
     except Exception as exc:
         logger.error("run_worker_cycle: unexpected error task_id=%s: %s", task_id, exc)
-        _set_error_reason("worker_crash")
+        _set_error_reason(task_id, E_WORKER_CRASH, db_path)
         try:
             release_lease(task_id, worker_id, token, "requires_manual", db_path=db_path)
         except Exception:
             pass
 
     finally:
-        # ── Worktree cleanup ───────────────────────────────────────────────
         for alias in worktree_aliases:
             try:
                 repo_mgr.cleanup_worktree(task_id, job, alias)

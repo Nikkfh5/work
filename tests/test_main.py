@@ -7,42 +7,15 @@ tests/test_main.py — тесты для supervisor/main.py
 """
 
 import asyncio
-import os
 import time
 import pytest
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-from storage.db import init_db, get_conn, create_task
-from storage.migrate import apply_migrations
-
-
-# ── Фикстуры ─────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def db_path(tmp_path):
-    """Временная БД с полной схемой."""
-    path = str(tmp_path / "test.db")
-    os.environ["DB_PATH"] = path
-    init_db(path)
-    with get_conn(path) as conn:
-        apply_migrations(conn)
-    yield path
-    if "DB_PATH" in os.environ:
-        del os.environ["DB_PATH"]
-
-
-@pytest.fixture
-def mock_tg_handler():
-    """Мок TelegramHandler."""
-    handler = AsyncMock()
-    handler.notify_owner = AsyncMock(return_value=True)
-    handler.poll_once = AsyncMock(return_value=[])
-    return handler
+from storage.db import get_conn, create_task
 
 
 # ── Тесты: heartbeat_writer ───────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_heartbeat_writer_creates_file(tmp_path):
@@ -87,6 +60,7 @@ async def test_heartbeat_writer_updates_file(tmp_path):
 
 # ── Тесты: schedule_at ───────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_schedule_at_calculates_next_run():
     """schedule_at вычисляет корректную задержку без зависания."""
@@ -100,9 +74,7 @@ async def test_schedule_at_calculates_next_run():
     ev = asyncio.Event()
 
     # Запускаем schedule_at, сразу устанавливаем shutdown
-    task = asyncio.create_task(
-        schedule_at(hour_utc=3, coro_fn=coro, shutdown_event=ev)
-    )
+    task = asyncio.create_task(schedule_at(hour_utc=3, coro_fn=coro, shutdown_event=ev))
     # Немедленный shutdown — coro не должна вызваться
     ev.set()
     await asyncio.wait_for(task, timeout=2.0)
@@ -112,10 +84,11 @@ async def test_schedule_at_calculates_next_run():
 
 # ── Тесты: dispatch_pending_tasks ────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_dispatch_picks_pending_task(db_path, mock_tg_handler):
     """dispatch_pending_tasks берёт задачу из DB со статусом pending."""
-    from supervisor.main import dispatch_pending_tasks, _running_tasks
+    from supervisor.main import dispatch_pending_tasks
 
     # Создаём pending задачу
     task_id = create_task(
@@ -140,7 +113,9 @@ async def test_dispatch_picks_pending_task(db_path, mock_tg_handler):
 
     with patch("supervisor.main.run_worker_cycle", mock_cycle):
         task = asyncio.create_task(
-            dispatch_pending_tasks(config, mock_tg_handler, db_path, interval=0.05, shutdown_event=ev)
+            dispatch_pending_tasks(
+                config, mock_tg_handler, db_path, interval=0.05, shutdown_event=ev
+            )
         )
         await asyncio.sleep(0.15)
         ev.set()
@@ -152,7 +127,7 @@ async def test_dispatch_picks_pending_task(db_path, mock_tg_handler):
 @pytest.mark.asyncio
 async def test_dispatch_respects_max_concurrent(db_path, mock_tg_handler):
     """dispatch_pending_tasks не запускает больше max_concurrent задач."""
-    from supervisor.main import dispatch_pending_tasks, _running_tasks
+    from supervisor.main import dispatch_pending_tasks
 
     # Создаём 3 задачи, max_concurrent=2
     for i in range(3):
@@ -179,7 +154,9 @@ async def test_dispatch_respects_max_concurrent(db_path, mock_tg_handler):
 
     with patch("supervisor.main.run_worker_cycle", mock_cycle):
         dispatch = asyncio.create_task(
-            dispatch_pending_tasks(config, mock_tg_handler, db_path, interval=0.05, shutdown_event=ev)
+            dispatch_pending_tasks(
+                config, mock_tg_handler, db_path, interval=0.05, shutdown_event=ev
+            )
         )
         await asyncio.sleep(0.2)
 
@@ -192,6 +169,7 @@ async def test_dispatch_respects_max_concurrent(db_path, mock_tg_handler):
 
 
 # ── Тесты: telegram_polling_loop ─────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_telegram_polling_loop_calls_poll_once(mock_tg_handler):
@@ -241,6 +219,7 @@ async def test_telegram_polling_loop_continues_on_error(mock_tg_handler):
 
 # ── Тесты: nightly_housekeeping ──────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_nightly_housekeeping_releases_stale(db_path):
     """nightly_housekeeping освобождает просроченные leases."""
@@ -259,6 +238,7 @@ async def test_nightly_housekeeping_releases_stale(db_path):
 
     # Принудительно делаем lease просроченным
     import time as time_mod
+
     time_mod.sleep(2)
 
     await nightly_housekeeping(db_path=db_path)
@@ -270,6 +250,7 @@ async def test_nightly_housekeeping_releases_stale(db_path):
 
 
 # ── Тесты: run_worker_cycle ───────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_run_worker_cycle_lease_conflict(db_path, mock_tg_handler):
@@ -314,7 +295,10 @@ async def test_run_worker_cycle_claude_error_notifies(db_path, mock_tg_handler):
     # max_attempts=1 чтобы не ждать WORKER_RETRY_DELAY_SECONDS между попытками
     config = {"supervisor": {}, "workers": {"job1_worker": {"max_attempts": 1}}}
 
-    with patch("supervisor.claude_runner.run_claude", AsyncMock(side_effect=ClaudeRunnerError("not found"))):
+    with patch(
+        "supervisor.claude_runner.run_claude",
+        AsyncMock(side_effect=ClaudeRunnerError("not found")),
+    ):
         await run_worker_cycle(task, config, mock_tg_handler, db_path)
 
     mock_tg_handler.notify_owner.assert_called_once()
@@ -337,7 +321,10 @@ async def test_run_worker_cycle_done_notifies(db_path, mock_tg_handler):
     )
 
     task = {"id": task_id, "assigned_worker": "job1_worker", "description": "test"}
-    config = {"supervisor": {"confidence_threshold": 70}, "workers": {"job1_worker": {}}}
+    config = {
+        "supervisor": {"confidence_threshold": 70},
+        "workers": {"job1_worker": {}},
+    }
 
     worker_stdout = """
 <<<JSON>>>
@@ -349,7 +336,9 @@ async def test_run_worker_cycle_done_notifies(db_path, mock_tg_handler):
 }
 <<<END>>>
 """
-    with patch("supervisor.claude_runner.run_claude", AsyncMock(return_value=worker_stdout)):
+    with patch(
+        "supervisor.claude_runner.run_claude", AsyncMock(return_value=worker_stdout)
+    ):
         await run_worker_cycle(task, config, mock_tg_handler, db_path)
 
     mock_tg_handler.notify_owner.assert_called_once()

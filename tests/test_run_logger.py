@@ -5,27 +5,13 @@ tests/test_run_logger.py — тесты для supervisor/run_logger.py
 """
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from storage.db import init_db, create_task, get_conn
-from storage.migrate import apply_migrations
+from storage.db import create_task
 from supervisor.run_logger import log_run, get_run_logs
-
-
-@pytest.fixture
-def db_path(tmp_path):
-    path = str(tmp_path / "test.db")
-    os.environ["DB_PATH"] = path
-    init_db(path)
-    with get_conn(path) as conn:
-        apply_migrations(conn)
-    yield path
-    if "DB_PATH" in os.environ:
-        del os.environ["DB_PATH"]
 
 
 @pytest.fixture
@@ -52,14 +38,20 @@ def fixed_now():
 
 # ── Тесты записи файлов ──────────────────────────────────────────────────────
 
+
 def test_log_run_creates_stdout_file(db_path, logs_dir, task_id):
     """log_run создаёт файл stdout."""
     stdout_path, _ = log_run(
-        task_id=task_id, phase="worker",
-        stdout="результат работы", stderr="",
-        parsed_json=None, json_valid=False,
-        db_path=db_path, logs_dir=logs_dir,
-        now_fn=fixed_now, worker_id="job1_worker",
+        task_id=task_id,
+        phase="worker",
+        stdout="результат работы",
+        stderr="",
+        parsed_json=None,
+        json_valid=False,
+        db_path=db_path,
+        logs_dir=logs_dir,
+        now_fn=fixed_now,
+        worker_id="job1_worker",
     )
     assert Path(stdout_path).exists()
     assert Path(stdout_path).read_text(encoding="utf-8") == "результат работы"
@@ -68,10 +60,14 @@ def test_log_run_creates_stdout_file(db_path, logs_dir, task_id):
 def test_log_run_creates_stderr_file(db_path, logs_dir, task_id):
     """log_run создаёт файл stderr."""
     _, stderr_path = log_run(
-        task_id=task_id, phase="worker",
-        stdout="", stderr="ошибка",
-        parsed_json=None, json_valid=False,
-        db_path=db_path, logs_dir=logs_dir,
+        task_id=task_id,
+        phase="worker",
+        stdout="",
+        stderr="ошибка",
+        parsed_json=None,
+        json_valid=False,
+        db_path=db_path,
+        logs_dir=logs_dir,
         now_fn=fixed_now,
     )
     assert Path(stderr_path).exists()
@@ -81,11 +77,14 @@ def test_log_run_creates_stderr_file(db_path, logs_dir, task_id):
 def test_log_run_redacts_secrets_in_files(db_path, logs_dir, task_id):
     """Секреты удаляются перед записью в файл."""
     stdout_path, _ = log_run(
-        task_id=task_id, phase="worker",
+        task_id=task_id,
+        phase="worker",
         stdout="git push with token ghp_AbCdEfGhIjKlMnOpQrStUvWx1234",
         stderr="",
-        parsed_json=None, json_valid=False,
-        db_path=db_path, logs_dir=logs_dir,
+        parsed_json=None,
+        json_valid=False,
+        db_path=db_path,
+        logs_dir=logs_dir,
         now_fn=fixed_now,
     )
     content = Path(stdout_path).read_text(encoding="utf-8")
@@ -96,10 +95,14 @@ def test_log_run_redacts_secrets_in_files(db_path, logs_dir, task_id):
 def test_log_run_file_names_contain_phase(db_path, logs_dir, task_id):
     """Имена файлов содержат phase."""
     stdout_path, stderr_path = log_run(
-        task_id=task_id, phase="reviewer",
-        stdout="ok", stderr="",
-        parsed_json=None, json_valid=False,
-        db_path=db_path, logs_dir=logs_dir,
+        task_id=task_id,
+        phase="reviewer",
+        stdout="ok",
+        stderr="",
+        parsed_json=None,
+        json_valid=False,
+        db_path=db_path,
+        logs_dir=logs_dir,
         now_fn=fixed_now,
     )
     assert "reviewer" in stdout_path
@@ -109,10 +112,14 @@ def test_log_run_file_names_contain_phase(db_path, logs_dir, task_id):
 def test_log_run_empty_stdout_stderr(db_path, logs_dir, task_id):
     """Пустые stdout/stderr — файлы создаются но пустые."""
     stdout_path, stderr_path = log_run(
-        task_id=task_id, phase="worker",
-        stdout="", stderr="",
-        parsed_json=None, json_valid=False,
-        db_path=db_path, logs_dir=logs_dir,
+        task_id=task_id,
+        phase="worker",
+        stdout="",
+        stderr="",
+        parsed_json=None,
+        json_valid=False,
+        db_path=db_path,
+        logs_dir=logs_dir,
         now_fn=fixed_now,
     )
     assert Path(stdout_path).read_text() == ""
@@ -121,14 +128,20 @@ def test_log_run_empty_stdout_stderr(db_path, logs_dir, task_id):
 
 # ── Тесты записи в task_runs ─────────────────────────────────────────────────
 
+
 def test_log_run_creates_task_run_record(db_path, logs_dir, task_id):
     """log_run создаёт запись в task_runs."""
     log_run(
-        task_id=task_id, phase="worker",
-        stdout="output", stderr="",
-        parsed_json={"status": "done"}, json_valid=True,
-        returncode=0, attempt=1,
-        db_path=db_path, logs_dir=logs_dir,
+        task_id=task_id,
+        phase="worker",
+        stdout="output",
+        stderr="",
+        parsed_json={"status": "done"},
+        json_valid=True,
+        returncode=0,
+        attempt=1,
+        db_path=db_path,
+        logs_dir=logs_dir,
         now_fn=fixed_now,
     )
     runs = get_run_logs(task_id=task_id, db_path=db_path)
@@ -144,10 +157,14 @@ def test_log_run_creates_task_run_record(db_path, logs_dir, task_id):
 def test_log_run_stores_paths_in_task_runs(db_path, logs_dir, task_id):
     """task_runs хранит пути к файлам, не содержимое."""
     stdout_path, stderr_path = log_run(
-        task_id=task_id, phase="worker",
-        stdout="output", stderr="err",
-        parsed_json=None, json_valid=False,
-        db_path=db_path, logs_dir=logs_dir,
+        task_id=task_id,
+        phase="worker",
+        stdout="output",
+        stderr="err",
+        parsed_json=None,
+        json_valid=False,
+        db_path=db_path,
+        logs_dir=logs_dir,
         now_fn=fixed_now,
     )
     runs = get_run_logs(task_id=task_id, db_path=db_path)
@@ -161,10 +178,14 @@ def test_log_run_stores_parsed_json(db_path, logs_dir, task_id):
     """parsed_json сериализуется в task_runs.parsed_json."""
     obj = {"status": "done", "confidence": 85}
     log_run(
-        task_id=task_id, phase="worker",
-        stdout="", stderr="",
-        parsed_json=obj, json_valid=True,
-        db_path=db_path, logs_dir=logs_dir,
+        task_id=task_id,
+        phase="worker",
+        stdout="",
+        stderr="",
+        parsed_json=obj,
+        json_valid=True,
+        db_path=db_path,
+        logs_dir=logs_dir,
         now_fn=fixed_now,
     )
     runs = get_run_logs(task_id=task_id, db_path=db_path)
@@ -177,11 +198,15 @@ def test_log_run_multiple_attempts(db_path, logs_dir, task_id):
     """Несколько вызовов log_run создают несколько записей."""
     for attempt in range(1, 4):
         log_run(
-            task_id=task_id, phase="worker",
-            stdout=f"attempt {attempt}", stderr="",
-            parsed_json=None, json_valid=False,
+            task_id=task_id,
+            phase="worker",
+            stdout=f"attempt {attempt}",
+            stderr="",
+            parsed_json=None,
+            json_valid=False,
             attempt=attempt,
-            db_path=db_path, logs_dir=logs_dir,
+            db_path=db_path,
+            logs_dir=logs_dir,
             now_fn=fixed_now,
         )
     runs = get_run_logs(task_id=task_id, db_path=db_path)
@@ -192,10 +217,26 @@ def test_log_run_multiple_attempts(db_path, logs_dir, task_id):
 
 def test_get_run_logs_filter_by_phase(db_path, logs_dir, task_id):
     """get_run_logs фильтрует по phase."""
-    log_run(task_id=task_id, phase="worker", stdout="w", stderr="",
-            parsed_json=None, json_valid=False, db_path=db_path, logs_dir=logs_dir)
-    log_run(task_id=task_id, phase="reviewer", stdout="r", stderr="",
-            parsed_json=None, json_valid=False, db_path=db_path, logs_dir=logs_dir)
+    log_run(
+        task_id=task_id,
+        phase="worker",
+        stdout="w",
+        stderr="",
+        parsed_json=None,
+        json_valid=False,
+        db_path=db_path,
+        logs_dir=logs_dir,
+    )
+    log_run(
+        task_id=task_id,
+        phase="reviewer",
+        stdout="r",
+        stderr="",
+        parsed_json=None,
+        json_valid=False,
+        db_path=db_path,
+        logs_dir=logs_dir,
+    )
 
     worker_runs = get_run_logs(task_id=task_id, phase="worker", db_path=db_path)
     reviewer_runs = get_run_logs(task_id=task_id, phase="reviewer", db_path=db_path)

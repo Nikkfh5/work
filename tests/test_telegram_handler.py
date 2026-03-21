@@ -6,30 +6,15 @@ tests/test_telegram_handler.py — тесты для integrations/telegram_handl
 Все тесты используют временную БД (tmp_path) и моки telegram.Bot.
 """
 
-import asyncio
 import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from storage.db import init_db, get_conn
-from storage.migrate import apply_migrations
+from storage.db import get_conn
 from integrations.telegram_handler import TelegramHandler
 
 
 # ── Фикстуры ─────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def db_path(tmp_path):
-    """Временная БД с полной схемой и миграциями. Устанавливает DB_PATH для db.create_task()."""
-    import os
-    path = str(tmp_path / "test.db")
-    os.environ["DB_PATH"] = path
-    init_db(path)
-    with get_conn(path) as conn:
-        apply_migrations(conn)
-    yield path
-    if "DB_PATH" in os.environ:
-        del os.environ["DB_PATH"]
 
 
 @pytest.fixture
@@ -60,7 +45,9 @@ def handler(db_path, mock_router, tmp_path):
     return h
 
 
-def make_update(update_id: int, text: str, username: str = "testuser", chat_id: int = 42):
+def make_update(
+    update_id: int, text: str, username: str = "testuser", chat_id: int = 42
+):
     """Создать мок telegram.Update."""
     update = MagicMock()
     update.update_id = update_id
@@ -75,6 +62,7 @@ def make_update(update_id: int, text: str, username: str = "testuser", chat_id: 
 
 
 # ── Тесты: создание задачи из TG-сообщения ──────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_poll_once_text_message_creates_task(handler, db_path, mock_router):
@@ -101,7 +89,6 @@ async def test_poll_once_text_message_creates_task(handler, db_path, mock_router
 @pytest.mark.asyncio
 async def test_poll_once_unknown_contact_no_task(handler, db_path):
     """Неизвестный контакт → задача НЕ создаётся, ответ отправлен."""
-    from unittest.mock import MagicMock
     handler._router.resolve_worker.side_effect = ValueError("unknown")
 
     update = make_update(1002, "Сделай задачу")
@@ -116,6 +103,7 @@ async def test_poll_once_unknown_contact_no_task(handler, db_path):
 
 
 # ── Тесты: идемпотентность ───────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_idempotency_same_update_id_no_duplicate(handler, db_path, mock_router):
@@ -156,6 +144,7 @@ async def test_offset_saved_after_poll(handler, db_path):
 
 # ── Тесты: команды ───────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_status_no_tasks(handler):
     """/status при пустой DB → сообщение 'нет задач'."""
@@ -167,6 +156,7 @@ async def test_status_no_tasks(handler):
 async def test_status_with_active_tasks(handler, db_path):
     """/status с активными задачами → список."""
     from storage.db import create_task
+
     create_task(
         source="telegram",
         source_contact="@user",
@@ -184,6 +174,7 @@ async def test_status_with_active_tasks(handler, db_path):
 async def test_approve_task(handler, db_path):
     """/approve переводит задачу pending_approval → pending."""
     from storage.db import create_task
+
     # Создаём задачу и вручную ставим статус pending_approval
     task_id = create_task(
         source="telegram",
@@ -193,7 +184,9 @@ async def test_approve_task(handler, db_path):
         client_contact="42",
     )
     with get_conn(db_path) as conn:
-        conn.execute("UPDATE tasks SET status='pending_approval' WHERE id=?", (task_id,))
+        conn.execute(
+            "UPDATE tasks SET status='pending_approval' WHERE id=?", (task_id,)
+        )
 
     response = await handler._handle_approve(task_id[:8], "Ок, делай")
 
@@ -207,6 +200,7 @@ async def test_approve_task(handler, db_path):
 async def test_reject_task(handler, db_path):
     """/reject переводит задачу pending_approval → rejected."""
     from storage.db import create_task
+
     task_id = create_task(
         source="telegram",
         source_contact="@user",
@@ -215,7 +209,9 @@ async def test_reject_task(handler, db_path):
         client_contact="42",
     )
     with get_conn(db_path) as conn:
-        conn.execute("UPDATE tasks SET status='pending_approval' WHERE id=?", (task_id,))
+        conn.execute(
+            "UPDATE tasks SET status='pending_approval' WHERE id=?", (task_id,)
+        )
 
     response = await handler._handle_reject(task_id[:8], "Не нужно")
 
@@ -236,6 +232,7 @@ async def test_approve_nonexistent_task(handler):
 async def test_approve_wrong_status(handler, db_path):
     """/approve задачи в статусе running → сообщение о неправильном статусе."""
     from storage.db import create_task
+
     task_id = create_task(
         source="telegram",
         source_contact="@user",
@@ -250,6 +247,7 @@ async def test_approve_wrong_status(handler, db_path):
 
 
 # ── Тесты: команды (диспетчер) ───────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_command_routing(handler):
@@ -275,6 +273,7 @@ async def test_poll_once_command_message(handler):
 
 # ── Тесты: notify_owner и fallback ───────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_notify_owner_success(handler):
     """notify_owner отправляет сообщение владельцу."""
@@ -283,13 +282,16 @@ async def test_notify_owner_success(handler):
     result = await handler.notify_owner("task#abc: DONE ✓")
 
     assert result is True
-    handler._bot.send_message.assert_called_once_with(chat_id=12345, text="task#abc: DONE ✓")
+    handler._bot.send_message.assert_called_once_with(
+        chat_id=12345, text="task#abc: DONE ✓"
+    )
 
 
 @pytest.mark.asyncio
 async def test_send_message_fallback_on_tg_error(handler, tmp_path):
     """При ошибке TG после retry → fallback в лог файл."""
     from telegram.error import TelegramError
+
     handler._bot.send_message = AsyncMock(side_effect=TelegramError("Network error"))
 
     result = await handler.send_message(12345, "Важное уведомление")
@@ -318,10 +320,12 @@ async def test_send_message_truncates_long_text(handler):
 
 # ── Тесты: обработка ошибок ─────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_poll_once_get_updates_error_returns_empty(handler):
     """Ошибка get_updates → возвращает пустой список, не падает."""
     from telegram.error import TelegramError
+
     handler._bot.get_updates = AsyncMock(side_effect=TelegramError("Timeout"))
 
     events = await handler.poll_once()
