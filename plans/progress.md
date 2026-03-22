@@ -5,7 +5,7 @@
 | Параметр | Значение |
 |----------|----------|
 | Активная фаза | 2 |
-| Тесты (всего) | 229 |
+| Тесты (всего) | 239 |
 | Тесты (статус) | ✅ все зелёные |
 | Последнее обновление | 2026-03-21 |
 
@@ -37,13 +37,13 @@
 - [x] `run_worker_cycle()` в `supervisor/main.py` — lease → worktree → claude CLI → json_guard → cleanup
 - [x] `tests/test_worker_cycle.py` — worktree setup/cleanup/error/multi-repo (8 тестов)
 
-## Фаза 3 — Code review ⏳ В ОЧЕРЕДИ
+## Фаза 3 — Code review ✅ ЗАВЕРШЕНА
 
-- [ ] `workers/job1_reviewer/CLAUDE.md` — шаблон для ревьюера
-- [ ] `workers/job1_reviewer/.mcp.json` — Context7 MCP
-- [ ] Итерации с structured feedback (APPROVED / NEEDS_CHANGES + comments)
-- [ ] safe_exec: ci_policy → commit → push
-- [ ] `tests/test_review_cycle.py` — bug → NEEDS_CHANGES → fix → APPROVED → git push
+- [x] `workers/job1_reviewer/CLAUDE.md` — шаблон ревьюера (verdict/feedback/issues)
+- [x] `workers/job1_reviewer/.mcp.json` + `.claude/settings.json` — Context7 + guard_bash
+- [x] Review iteration flow — APPROVED → CI → push | NEEDS_CHANGES → retry (10 тестов)
+- [x] `_run_ci_and_push()` — style → commit → CI → push через safe_exec
+- [x] `tests/test_review_cycle.py` — 10 тестов (approved, retry, exhausted, CI fail, invalid JSON)
 
 ## Фаза 4 — Эскалация + pending_approval ⏳ В ОЧЕРЕДИ
 
@@ -92,13 +92,13 @@ _Нет активных блокеров._
 ## Backlog рефакторинга (собрано после Фазы 2)
 
 ### Высокий приоритет (перед Фазой 3)
-- [ ] Создать `tests/conftest.py` — shared fixtures: `db_path`, `mock_tg_handler`, `_make_task()`, `WORKER_DONE_JSON` (дублируются в 7 файлах)
-- [ ] Использовать константы ошибок (`E_WORKER_CRASH` и т.д.) вместо строковых литералов в main.py (9 мест)
+- [x] Создать `tests/conftest.py` — shared fixtures: `db_path`, `mock_tg_handler`, `WORKER_DONE_JSON` ✅
+- [x] Использовать константы ошибок (`E_WORKER_CRASH` и т.д.) вместо строковых литералов ✅
+- [x] Декомпозировать `run_worker_cycle()` → 5 private-функций ✅
+- [x] `_notify_failure()` — единый helper вместо 5 copy-paste TG блоков ✅
+- [x] `_fail_final`, `_set_error_reason` — из closures в обычные функции ✅
 
 ### Средний приоритет (после Фазы 3)
-- [ ] Декомпозировать `run_worker_cycle()` (290 строк) — вынести: `_setup_worktrees()`, `_notify_failure()`, worktree setup/cleanup
-- [ ] `_fail_final` — включить TG-уведомление внутрь (сейчас каждый call site дублирует notify)
-- [ ] 5 copy-paste блоков TG-уведомлений → один `_notify_failure(tg, task_id, msg)` helper
 - [ ] `_set_error_reason` — вынести в db.py как `update_task_error_reason()` (нужно одобрение, protected file)
 - [ ] `SELECT *` в dispatch → `SELECT id, assigned_worker, description`
 

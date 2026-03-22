@@ -46,6 +46,18 @@ E_JSON_SCHEMA = "json_schema_invalid"
 E_SAFEEXEC_TIMEOUT = "safeexec_timeout"
 E_WORKER_CRASH = "worker_crash"
 E_GIT_PUSH_FAIL = "git_push_failed"
+E_REVIEW_EXHAUSTED = "review_exhausted"
+E_REVIEWER_CRASH = "reviewer_crash"
+
+
+def _worker_to_job(worker_id: str) -> str:
+    """Извлечь имя job из worker_id: 'job1_worker' → 'job1'."""
+    return (
+        worker_id.removesuffix("_worker")
+        if worker_id.endswith("_worker")
+        else worker_id
+    )
+
 
 # Событие для graceful shutdown (устанавливается обработчиком сигналов)
 _shutdown_event: asyncio.Event = asyncio.Event()
@@ -572,11 +584,7 @@ async def _run_review_cycle(
         # No reviewer — skip review, do CI+push if repos exist, then done
         if repos_context:
             repos = worker_cfg.get("repos", [])
-            job = (
-                worker_id.removesuffix("_worker")
-                if worker_id.endswith("_worker")
-                else worker_id
-            )
+            job = _worker_to_job(worker_id)
             repo_mgr = RepoManager()
             for repo in repos:
                 success, err = await _run_ci_and_push(
@@ -621,7 +629,7 @@ async def _run_review_cycle(
             logger.error(
                 "_run_review_cycle: reviewer error task_id=%s: %s", task_id, exc
             )
-            _fail_final(task_id, worker_id, token, E_WORKER_CRASH, db_path)
+            _fail_final(task_id, worker_id, token, E_REVIEWER_CRASH, db_path)
             await _notify_failure(
                 tg_handler, task_id, f"reviewer crashed: {str(exc)[:150]}"
             )
@@ -664,11 +672,7 @@ async def _run_review_cycle(
             # CI + push
             if repos_context:
                 repos = worker_cfg.get("repos", [])
-                job = (
-                    worker_id.removesuffix("_worker")
-                    if worker_id.endswith("_worker")
-                    else worker_id
-                )
+                job = _worker_to_job(worker_id)
                 repo_mgr = RepoManager()
                 for repo in repos:
                     success, err = await _run_ci_and_push(
@@ -697,7 +701,7 @@ async def _run_review_cycle(
         # NEEDS_CHANGES — retry worker
         is_last = iteration == max_iterations
         if is_last:
-            _fail_final(task_id, worker_id, token, E_WORKER_CRASH, db_path)
+            _fail_final(task_id, worker_id, token, E_REVIEW_EXHAUSTED, db_path)
             feedback = reviewer_parsed.get("feedback", "")
             await tg_handler.notify_owner(
                 f"task#{task_id[:8]}: review exhausted ({max_iterations} iterations).\n"
@@ -902,11 +906,7 @@ async def run_worker_cycle(
 
     # ── Worktree setup ─────────────────────────────────────────────────────
     repos = worker_cfg.get("repos", [])
-    job = (
-        worker_id.removesuffix("_worker")
-        if worker_id.endswith("_worker")
-        else worker_id
-    )
+    job = _worker_to_job(worker_id)
     branching = worker_cfg.get("branching_policy", {})
     branch_pattern = branching.get("pattern", "ai/task-{task_id}")
     base_branch = branching.get("base", "main")
