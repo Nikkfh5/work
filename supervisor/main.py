@@ -36,6 +36,7 @@ from storage.migrate import apply_migrations
 from supervisor.config_validator import load_and_validate
 from supervisor.lease_manager import acquire_lease, release_lease, release_stale
 from supervisor.repo_manager import RepoManager
+from supervisor.safe_exec import safe_exec
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ E_JSON_INVALID = "json_invalid"
 E_JSON_SCHEMA = "json_schema_invalid"
 E_SAFEEXEC_TIMEOUT = "safeexec_timeout"
 E_WORKER_CRASH = "worker_crash"
+E_GIT_PUSH_FAIL = "git_push_failed"
 
 # Событие для graceful shutdown (устанавливается обработчиком сигналов)
 _shutdown_event: asyncio.Event = asyncio.Event()
@@ -340,6 +342,437 @@ async def _notify_failure(
     )
 
 
+def _build_reviewer_prompt(
+    task_description: str,
+    worker_result: dict,
+    repos_context: Optional[list[dict]] = None,
+) -> str:
+    """Промпт для ревьюера: задание + результат воркера + JSON формат."""
+    notes = worker_result.get("notes", "")
+    repos_info = worker_result.get("repos", [])
+    changed_files_section = ""
+    for repo in repos_info:
+        alias = repo.get("alias", "?")
+        files = repo.get("changed_files", [])
+        if files:
+            changed_files_section += f"\n  {alias}: {', '.join(str(f) for f in files)}"
+
+    workspace_section = ""
+    if repos_context:
+        lines = ["Репозитории:"]
+        for repo in repos_context:
+            lines.append(f"  - {repo['alias']}: {repo['path']}")
+        workspace_section = "\n".join(lines) + "\n\n"
+
+    return f"""\
+Ты — ревьюер. Проверь результат воркера по заданию.
+
+─────────────────────────────────────────────
+Задание:
+{task_description}
+
+─────────────────────────────────────────────
+Результат воркера:
+{notes}
+
+Изменённые файлы:{changed_files_section if changed_files_section else " (нет)"}
+
+{workspace_section}─────────────────────────────────────────────
+Проверь:
+1. Код соответствует заданию
+2. Нет явных ошибок, уязвимостей, нарушений стиля
+3. Тесты покрывают основные сценарии
+
+Выведи результат СТРОГО в этом формате:
+
+<<<JSON>>>
+{{
+  "verdict": "APPROVED" или "NEEDS_CHANGES",
+  "feedback": "<общий комментарий>",
+  "issues": [
+    {{"repo": "<alias>", "file": "<путь>", "line": null, "type": "bug|style|logic|test", "message": "<описание>"}}
+  ]
+}}
+<<<END>>>
+
+Если всё ОК — verdict "APPROVED" и пустой issues.
+Если есть замечания — verdict "NEEDS_CHANGES" и заполни issues.
+"""
+
+
+def _build_worker_retry_prompt(
+    task_description: str,
+    attempt: int,
+    max_attempts: int,
+    prev_notes: str,
+    reviewer_issues: list[dict],
+    repos_context: Optional[list[dict]] = None,
+    branch: str = "",
+) -> str:
+    """Промпт для повторной попытки воркера после NEEDS_CHANGES."""
+    issues_lines = []
+    for iss in reviewer_issues:
+        repo = iss.get("repo", "?")
+        file = iss.get("file", "?")
+        line = iss.get("line")
+        iss_type = iss.get("type", "?")
+        msg = iss.get("message", "")
+        loc = f"{file}:{line}" if line else file
+        issues_lines.append(f"  - {repo}/{loc} [{iss_type}] {msg}")
+
+    issues_text = (
+        "\n".join(issues_lines) if issues_lines else "  (нет конкретных замечаний)"
+    )
+
+    workspace_section = ""
+    if repos_context:
+        lines = [f"Ветка: {branch}", "Репозитории:"]
+        for repo in repos_context:
+            lines.append(f"  - {repo['alias']}: {repo['path']}")
+        lines.append("Работай ТОЛЬКО в этих директориях.")
+        workspace_section = "\n".join(lines) + "\n\n"
+
+    return f"""\
+Задача: {task_description}
+Попытка: {attempt}/{max_attempts}
+
+Предыдущий результат: {prev_notes}
+
+Замечания ревьюера:
+{issues_text}
+
+Исправь только указанные замечания. Не трогай то, что уже работает.
+
+─────────────────────────────────────────────
+{workspace_section}ОБЯЗАТЕЛЬНО: после выполнения выведи результат СТРОГО в этом формате:
+
+<<<JSON>>>
+{{
+  "status": "done",
+  "confidence": <0-100>,
+  "result": {{
+    "repos": [{", ".join(f'{{"alias": "{r["alias"]}", "changed_files": [...], "entrypoint": null}}' for r in (repos_context or []))}],
+    "notes": "<что именно исправлено>"
+  }},
+  "question": null
+}}
+<<<END>>>
+"""
+
+
+async def _run_ci_and_push(
+    task_id: str,
+    job: str,
+    alias: str,
+    worker_cfg: dict,
+    repo_mgr: RepoManager,
+    db_path: Optional[str] = None,
+) -> tuple[bool, str]:
+    """
+    Запустить style formatters, git commit, CI checks, git push.
+
+    Returns:
+        (success, error_message)
+    """
+    wt_path = str(repo_mgr._worktree_path(task_id, alias))
+
+    # 1. Style policy — run formatters before commit
+    style_policy = worker_cfg.get("style_policy", {})
+    if style_policy.get("run_before_commit"):
+        for fmt_cmd in style_policy.get("formatters", []):
+            try:
+                _out, _err, rc = safe_exec(fmt_cmd, cwd=wt_path, timeout=120)
+                if rc != 0:
+                    logger.warning(
+                        "_run_ci_and_push: formatter %s failed task_id=%s rc=%d",
+                        fmt_cmd[0],
+                        task_id,
+                        rc,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "_run_ci_and_push: formatter error task_id=%s: %s", task_id, exc
+                )
+
+    # 2. Git add + commit
+    try:
+        safe_exec(["git", "add", "."], cwd=wt_path, timeout=60)
+        _out, _err, rc = safe_exec(
+            ["git", "commit", "-m", f"ai: task {task_id[:8]} — auto-commit"],
+            cwd=wt_path,
+            timeout=60,
+        )
+        if rc != 0:
+            # Nothing to commit is OK (rc=1 with "nothing to commit")
+            if "nothing to commit" not in _out and "nothing to commit" not in _err:
+                return False, f"git commit failed (rc={rc}): {_err[:200]}"
+    except Exception as exc:
+        return False, f"git commit error: {str(exc)[:200]}"
+
+    # 3. CI policy — run checks before push
+    ci_policy = worker_cfg.get("ci_policy", {})
+    ci_required = ci_policy.get("required_pass", False)
+    for ci_cmd in ci_policy.get("run_before_push", []):
+        try:
+            _out, _err, rc = safe_exec(ci_cmd, cwd=wt_path, timeout=300)
+            if rc != 0 and ci_required:
+                return False, f"CI failed ({ci_cmd[0]}): {_err[:200]}"
+        except Exception as exc:
+            if ci_required:
+                return (
+                    False,
+                    f"CI error ({ci_cmd[0] if ci_cmd else '?'}): {str(exc)[:200]}",
+                )
+
+    # 4. Git push
+    try:
+        _out, _err, rc = safe_exec(
+            ["git", "push", "origin", "HEAD"],
+            cwd=wt_path,
+            timeout=120,
+        )
+        if rc != 0:
+            return False, f"git push failed (rc={rc}): {_err[:200]}"
+    except Exception as exc:
+        return False, f"git push error: {str(exc)[:200]}"
+
+    logger.info("_run_ci_and_push: success task_id=%s", task_id)
+    return True, ""
+
+
+async def _run_review_cycle(
+    task_id: str,
+    worker_id: str,
+    token: str,
+    task_description: str,
+    worker_result: dict,
+    config: dict,
+    tg_handler,
+    db_path: Optional[str] = None,
+    repos_context: Optional[list[dict]] = None,
+    branch: str = "",
+    worker_dir: str = "",
+    worker_timeout: int = 1800,
+) -> None:
+    """
+    Цикл review: reviewer проверяет → при NEEDS_CHANGES → worker retry → повтор.
+
+    При APPROVED → CI + push → release_lease done → TG.
+    При exhausted iterations → release_lease requires_manual → TG.
+    """
+    from supervisor.claude_runner import ClaudeRunnerError, run_claude
+    from supervisor.json_guard import extract_json, validate_reviewer_schema
+    from supervisor.json_guard import validate_worker_schema
+    from supervisor.run_logger import log_run
+
+    worker_cfg = config.get("workers", {}).get(worker_id, {})
+    reviewer_id = worker_cfg.get("reviewer_id")
+
+    if not reviewer_id:
+        # No reviewer — skip review, do CI+push if repos exist, then done
+        if repos_context:
+            repos = worker_cfg.get("repos", [])
+            job = (
+                worker_id.removesuffix("_worker")
+                if worker_id.endswith("_worker")
+                else worker_id
+            )
+            repo_mgr = RepoManager()
+            for repo in repos:
+                success, err = await _run_ci_and_push(
+                    task_id, job, repo["alias"], worker_cfg, repo_mgr, db_path
+                )
+                if not success:
+                    _fail_final(task_id, worker_id, token, E_GIT_PUSH_FAIL, db_path)
+                    await _notify_failure(tg_handler, task_id, f"CI/push failed: {err}")
+                    return
+
+        release_lease(task_id, worker_id, token, "done", db_path=db_path)
+        notes = worker_result.get("notes", "")
+        await tg_handler.notify_owner(
+            f"task#{task_id[:8]}: DONE (no reviewer)\n{notes[:200]}"
+        )
+        logger.info("_run_review_cycle: done (no reviewer) task_id=%s", task_id)
+        return
+
+    reviewer_dir = f"workers/{reviewer_id}"
+    max_iterations = int(worker_cfg.get("max_review_iterations", 3))
+    current_worker_result = worker_result
+
+    for iteration in range(1, max_iterations + 1):
+        logger.info(
+            "_run_review_cycle: iteration %d/%d task_id=%s",
+            iteration,
+            max_iterations,
+            task_id,
+        )
+
+        # Build reviewer prompt
+        reviewer_prompt = _build_reviewer_prompt(
+            task_description, current_worker_result, repos_context
+        )
+
+        # Run reviewer
+        try:
+            reviewer_stdout = await run_claude(
+                reviewer_prompt, cwd=reviewer_dir, timeout=worker_timeout
+            )
+        except (ClaudeRunnerError, asyncio.TimeoutError) as exc:
+            logger.error(
+                "_run_review_cycle: reviewer error task_id=%s: %s", task_id, exc
+            )
+            _fail_final(task_id, worker_id, token, E_WORKER_CRASH, db_path)
+            await _notify_failure(
+                tg_handler, task_id, f"reviewer crashed: {str(exc)[:150]}"
+            )
+            return
+
+        # Parse reviewer response
+        reviewer_parsed = extract_json(reviewer_stdout)
+        reviewer_valid, reviewer_err = (
+            validate_reviewer_schema(reviewer_parsed)
+            if reviewer_parsed
+            else (False, "no JSON from reviewer")
+        )
+
+        log_run(
+            task_id=task_id,
+            phase="reviewer",
+            stdout=reviewer_stdout,
+            stderr="",
+            parsed_json=reviewer_parsed,
+            json_valid=reviewer_valid,
+            worker_id=reviewer_id,
+            db_path=db_path,
+        )
+
+        if not reviewer_valid:
+            logger.error(
+                "_run_review_cycle: invalid reviewer json task_id=%s err=%s",
+                task_id,
+                reviewer_err,
+            )
+            _fail_final(task_id, worker_id, token, E_JSON_SCHEMA, db_path)
+            await _notify_failure(
+                tg_handler, task_id, f"reviewer JSON invalid: {reviewer_err[:150]}"
+            )
+            return
+
+        verdict = reviewer_parsed.get("verdict")
+
+        if verdict == "APPROVED":
+            # CI + push
+            if repos_context:
+                repos = worker_cfg.get("repos", [])
+                job = (
+                    worker_id.removesuffix("_worker")
+                    if worker_id.endswith("_worker")
+                    else worker_id
+                )
+                repo_mgr = RepoManager()
+                for repo in repos:
+                    success, err = await _run_ci_and_push(
+                        task_id, job, repo["alias"], worker_cfg, repo_mgr, db_path
+                    )
+                    if not success:
+                        _fail_final(task_id, worker_id, token, E_GIT_PUSH_FAIL, db_path)
+                        await _notify_failure(
+                            tg_handler, task_id, f"CI/push failed: {err}"
+                        )
+                        return
+
+            release_lease(task_id, worker_id, token, "done", db_path=db_path)
+            feedback = reviewer_parsed.get("feedback", "")
+            await tg_handler.notify_owner(
+                f"task#{task_id[:8]}: DONE (reviewer APPROVED, iter={iteration})\n"
+                f"{feedback[:200]}"
+            )
+            logger.info(
+                "_run_review_cycle: approved task_id=%s iteration=%d",
+                task_id,
+                iteration,
+            )
+            return
+
+        # NEEDS_CHANGES — retry worker
+        is_last = iteration == max_iterations
+        if is_last:
+            _fail_final(task_id, worker_id, token, E_WORKER_CRASH, db_path)
+            feedback = reviewer_parsed.get("feedback", "")
+            await tg_handler.notify_owner(
+                f"task#{task_id[:8]}: review exhausted ({max_iterations} iterations).\n"
+                f"{feedback[:200]}\n"
+                f"Повтори: /retry {task_id[:8]}"
+            )
+            logger.warning(
+                "_run_review_cycle: exhausted task_id=%s iterations=%d",
+                task_id,
+                max_iterations,
+            )
+            return
+
+        # Build worker retry prompt and re-run worker
+        prev_notes = current_worker_result.get("notes", "")
+        issues = reviewer_parsed.get("issues", [])
+        retry_prompt = _build_worker_retry_prompt(
+            task_description,
+            attempt=iteration + 1,
+            max_attempts=max_iterations,
+            prev_notes=prev_notes,
+            reviewer_issues=issues,
+            repos_context=repos_context,
+            branch=branch,
+        )
+
+        try:
+            worker_stdout = await run_claude(
+                retry_prompt, cwd=worker_dir, timeout=worker_timeout
+            )
+        except (ClaudeRunnerError, asyncio.TimeoutError) as exc:
+            logger.error(
+                "_run_review_cycle: worker retry error task_id=%s: %s", task_id, exc
+            )
+            _fail_final(task_id, worker_id, token, E_WORKER_CRASH, db_path)
+            await _notify_failure(
+                tg_handler, task_id, f"worker retry crashed: {str(exc)[:150]}"
+            )
+            return
+
+        # Parse worker retry result
+        worker_parsed = extract_json(worker_stdout)
+        worker_valid, worker_err = (
+            validate_worker_schema(worker_parsed)
+            if worker_parsed
+            else (False, "no JSON from worker retry")
+        )
+
+        log_run(
+            task_id=task_id,
+            phase="worker",
+            stdout=worker_stdout,
+            stderr="",
+            parsed_json=worker_parsed,
+            json_valid=worker_valid,
+            worker_id=worker_id,
+            db_path=db_path,
+        )
+
+        if not worker_valid:
+            logger.error(
+                "_run_review_cycle: worker retry invalid json task_id=%s err=%s",
+                task_id,
+                worker_err,
+            )
+            _fail_final(task_id, worker_id, token, E_JSON_SCHEMA, db_path)
+            await _notify_failure(
+                tg_handler, task_id, f"worker retry JSON invalid: {worker_err[:150]}"
+            )
+            return
+
+        # Update current result for next review iteration
+        current_worker_result = worker_parsed.get("result", {})
+
+
 async def _handle_worker_result(
     parsed: dict,
     task_id: str,
@@ -350,6 +783,11 @@ async def _handle_worker_result(
     max_attempts: int,
     tg_handler: TelegramHandler,
     db_path: Optional[str] = None,
+    config: Optional[dict] = None,
+    repos_context: Optional[list[dict]] = None,
+    branch: str = "",
+    worker_dir: str = "",
+    worker_timeout: int = 1800,
 ) -> None:
     """Обработать валидный JSON результат воркера: done/blocked/error."""
     worker_status = parsed.get("status", "error")
@@ -357,6 +795,32 @@ async def _handle_worker_result(
     attempt_note = f" (попытка {attempt}/{max_attempts})" if attempt > 1 else ""
 
     if worker_status == "done" and confidence >= conf_threshold:
+        # Check if reviewer is configured
+        effective_config = config or {}
+        worker_cfg = effective_config.get("workers", {}).get(worker_id, {})
+        reviewer_id = worker_cfg.get("reviewer_id")
+
+        if reviewer_id:
+            # Delegate to review cycle
+            worker_result = parsed.get("result", {})
+            task_description = parsed.get("_task_description", "")
+            # _task_description is injected by run_worker_cycle before calling us
+            await _run_review_cycle(
+                task_id=task_id,
+                worker_id=worker_id,
+                token=token,
+                task_description=task_description,
+                worker_result=worker_result,
+                config=effective_config,
+                tg_handler=tg_handler,
+                db_path=db_path,
+                repos_context=repos_context,
+                branch=branch,
+                worker_dir=worker_dir,
+                worker_timeout=worker_timeout,
+            )
+            return
+
         release_lease(task_id, worker_id, token, "done", db_path=db_path)
         notes = parsed.get("result", {}).get("notes", "")
         await tg_handler.notify_owner(
@@ -593,6 +1057,23 @@ async def run_worker_cycle(
                 continue
 
             # JSON валидный — обработка результата
+            # Inject task description for review cycle
+            parsed["_task_description"] = task["description"]
+
+            # Build repos_context and branch for review cycle
+            _repos_ctx = (
+                [
+                    {
+                        "alias": r["alias"],
+                        "path": f"workspace/{task_id}/{r['alias']}",
+                    }
+                    for r in repos
+                ]
+                if repos
+                else None
+            )
+            _branch = branch_pattern.replace("{task_id}", task_id) if repos else ""
+
             await _handle_worker_result(
                 parsed,
                 task_id,
@@ -603,6 +1084,11 @@ async def run_worker_cycle(
                 max_attempts,
                 tg_handler,
                 db_path,
+                config=config,
+                repos_context=_repos_ctx,
+                branch=_branch,
+                worker_dir=worker_dir,
+                worker_timeout=worker_timeout,
             )
             return
 
