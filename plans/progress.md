@@ -110,10 +110,61 @@ _Нет активных блокеров._
 - [ ] `_make_task()` → возвращать полный dict из DB, не хардкодить поля
 
 ### Идеи (обсудить на brainstorm)
-- [ ] Workspace path в промпте воркера (чтобы знал куда писать код)
-- [ ] Git push в worker cycle (ci_policy → commit → push через safe_exec) — задача Фазы 3
+- [x] Workspace path в промпте воркера ✅ (реализовано)
+- [x] Git push в worker cycle ✅ (реализовано в Фазе 3: _run_ci_and_push)
 - [ ] sequential thinking MCP, filesystem MCP, wcgw MCP
 - [ ] Декомпозиция main.py → отдельный `supervisor/worker_cycle.py`
+
+### Future: Фаза 8 — GraphRAG Memory для воркеров
+
+**Проблема:** воркеры stateless. Если воркер второй раз фиксит баг в том же файле, он не помнит первый раз.
+
+**Решение:** Полноценный GraphRAG — граф связей между задачами, файлами, решениями.
+
+**Схема (SQLite, через migrate.py):**
+```sql
+-- Какие файлы менялись в каждой задаче
+CREATE TABLE task_files (
+    task_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    repo_alias TEXT NOT NULL,
+    change_type TEXT DEFAULT 'modified',  -- modified|added|deleted
+    UNIQUE(task_id, file_path)
+);
+
+-- Связи между задачами (автоматические + ручные)
+CREATE TABLE task_relations (
+    task_a TEXT NOT NULL,
+    task_b TEXT NOT NULL,
+    relation TEXT NOT NULL,  -- same_file|same_module|followup|regression
+    confidence REAL DEFAULT 1.0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Саммари решений (для промпта воркера)
+CREATE TABLE task_summaries (
+    task_id TEXT NOT NULL PRIMARY KEY,
+    summary TEXT NOT NULL,          -- что сделал воркер (из result.notes)
+    error_summary TEXT,             -- если были проблемы
+    files_changed TEXT,             -- JSON list
+    tags TEXT,                      -- extracted: "auth, refresh_token, middleware"
+    embedding BLOB                  -- optional: для semantic search позже
+);
+```
+
+**Data flow:**
+1. Worker done → supervisor записывает в task_files + task_summaries (из parsed JSON)
+2. Supervisor автоматически строит task_relations: "task#55 трогает auth.py → task#38 и #42 тоже трогали auth.py → relation=same_file"
+3. При новой задаче: query граф → "все задачи с same_file relations → их summaries → top-k по релевантности"
+4. Релевантный контекст включается в промпт воркера: "Ранее в этих файлах: task#38 чинил refresh token, task#42 — повторный баг"
+
+**Что НЕ нужно (YAGNI):**
+- Neo4j / graph DB — SQLite + joins хватит
+- Embedding pipeline — начать без него, добавить позже
+- Zep Cloud — платный, не нужен
+
+**Зависимости:** Фазы 0-3 (done), migrate.py (done), json_guard (done)
+**Когда:** после Фазы 7 (Docker deploy), когда система стабильна
 
 ## Заметки для ретроспективы
 

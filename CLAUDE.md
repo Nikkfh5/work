@@ -69,8 +69,10 @@ plans/progress.md            трекер прогресса + backlog рефа�
 | 0 Safety | ✅ Done | log_utils, migrate, config_validator, lease_manager, json_guard, run_logger, safe_exec, repo_manager, guard_bash |
 | 1 Inputs | ✅ Done | telegram_handler, email_handler, main.py |
 | 2 Worker | ✅ Done | worker CLAUDE.md/MCP/hooks, run_worker_cycle (worktree) |
-| 3 Review | ⏳ Next | reviewer CLAUDE.md, итерации, ci → push |
-| 4-7 | ⏳ | escalation, notion, health, docker |
+| 3 Review | ✅ Done | reviewer CLAUDE.md, итерации, ci → push |
+| 4 Escalation | ⏳ Next | escalation.py (5 сценариев), pending_approval |
+| 5-7 | ⏳ | notion, health, docker |
+| 8 GraphRAG | 💡 Future | task_files, task_relations, task_summaries — память воркеров |
 
 Детали: `plans/progress.md`. Backlog рефакторинга там же.
 

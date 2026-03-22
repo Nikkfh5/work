@@ -1217,10 +1217,15 @@ WORKTREE_RETENTION_DAYS=7
 3. `Makefile`
 4. Деплой → `make setup-mcp` → `claude auth login` → `docker-compose up -d`
 
-*(Future / Фаза 8: одноразовые воркер-контейнеры. Дизайн через safe_exec и
+*(Future / Фаза 8: GraphRAG Memory — граф связей задач/файлов/решений в SQLite.
+Воркер получает релевантный контекст из прошлых задач через graph traversal.
+Таблицы: task_files, task_relations, task_summaries. Без Neo4j, без embeddings на старте.
+Источник идеи: MiroFish (github.com/666ghj/MiroFish) — адаптировано под наш стек.)*
+
+*(Future / Фаза 9: одноразовые воркер-контейнеры. Дизайн через safe_exec и
 worktrees это уже позволяет — реализовывать после стабильной Фазы 7.)*
 
-*(Future / Фаза 9: Meeting Agent — отдельный контур, не смешивать с кодовым
+*(Future / Фаза 10: Meeting Agent — отдельный контур, не смешивать с кодовым
 оркестратором. Поэтапно: (1) "тихий агент" — слушает, транскрибирует, конспект
 в Notion + подсказки в TG; (2) "push-to-talk" — твой голос через ElevenLabs,
 только после твоего подтверждения; (3) автономный режим для низкорисковых митингов
