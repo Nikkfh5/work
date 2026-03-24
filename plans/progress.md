@@ -5,7 +5,7 @@
 | Параметр | Значение |
 |----------|----------|
 | Активная фаза | 2 |
-| Тесты (всего) | 239 |
+| Тесты (всего) | 247 |
 | Тесты (статус) | ✅ все зелёные |
 | Последнее обновление | 2026-03-21 |
 
@@ -45,18 +45,20 @@
 - [x] `_run_ci_and_push()` — style → commit → CI → push через safe_exec
 - [x] `tests/test_review_cycle.py` — 10 тестов (approved, retry, exhausted, CI fail, invalid JSON)
 
-## Фаза 4 — Эскалация + pending_approval ⏳ В ОЧЕРЕДИ
+## Фаза 4 — Эскалация + pending_approval ✅ ЗАВЕРШЕНА
 
-- [ ] `supervisor/escalation.py` — 5 сценариев эскалации
-- [ ] pending_approval flow (/approve, /reject через TG)
-- [ ] `tests/test_escalation.py` — тест каждого сценария
+- [x] `supervisor/escalation.py` — supervisor_reasoning, handle_worker_blocked, pending_approval (8 тестов)
+- [x] CRUD escalations — create/resolve/get_open_escalation + route_owner_reply
+- [x] `tests/test_escalation.py` — 8 тестов (reasoning, auto-resolve, escalate, CRUD, routing)
 
-## Фаза 5 — Notion + summarizer ⏳ В ОЧЕРЕДИ
+## Фаза 5 — Summarizer (daily digest) ⏳ В ОЧЕРЕДИ
 
-- [ ] `integrations/notion_handler.py` — создание/обновление страниц с fallback
-- [ ] Обновить уведомления: TG коротко + Notion подробно
-- [ ] `supervisor/summarizer.py` — daily summary + scheduler
-- [ ] `tests/test_notion_handler.py`, `tests/test_summarizer.py`
+~~Notion убран~~ → заменяется GraphRAG (Фаза 8) для контекста supervisor'а.
+
+- [ ] `supervisor/summarizer.py` — daily digest: сбор статистики за день + отправка в TG
+- [ ] Условие: отправлять ТОЛЬКО если за день были задачи (не спамить пустым дайджестом)
+- [ ] Подключить в main.py → schedule_at(daily_summary_hour_utc)
+- [ ] `tests/test_summarizer.py`
 
 ## Фаза 6 — Health Monitor ⏳ В ОЧЕРЕДИ
 

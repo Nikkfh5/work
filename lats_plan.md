@@ -1197,11 +1197,11 @@ WORKTREE_RETENTION_DAYS=7
 2. pending_approval flow (/approve, /reject, диалог)
 3. Тест каждого сценария
 
-### Фаза 5 — Notion + email + summarizer
-1. `notion_handler.py` с fallback
-2. Обновить все уведомления: TG коротко + Notion подробно
-3. `summarizer.py` + scheduler
-4. `email_handler.py`
+### Фаза 5 — Summarizer (daily digest)
+1. `summarizer.py` — сбор статистики за день (задачи done/blocked/error, top ошибки)
+2. Условие: отправлять в TG ТОЛЬКО если за день были задачи
+3. Подключить в schedule_at(daily_summary_hour_utc)
+4. ~~Notion убран~~ — контекст supervisor'а через GraphRAG (Фаза 8)
 
 ### Фаза 6 — Health Monitor
 1. `health_monitor.py` (build_snapshot + run_health_check + run_health_task)

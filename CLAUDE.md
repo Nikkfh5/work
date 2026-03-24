@@ -70,9 +70,11 @@ plans/progress.md            трекер прогресса + backlog рефа�
 | 1 Inputs | ✅ Done | telegram_handler, email_handler, main.py |
 | 2 Worker | ✅ Done | worker CLAUDE.md/MCP/hooks, run_worker_cycle (worktree) |
 | 3 Review | ✅ Done | reviewer CLAUDE.md, итерации, ci → push |
-| 4 Escalation | ⏳ Next | escalation.py (5 сценариев), pending_approval |
-| 5-7 | ⏳ | notion, health, docker |
-| 8 GraphRAG | 💡 Future | entities, relations, chunks, task_files, task_summaries + knowledge_worker |
+| 4 Escalation | ✅ Done | escalation.py (supervisor_reasoning, pending_approval) |
+| 5 Summarizer | ⏳ Next | daily digest в TG (только если были задачи). Notion убран → GraphRAG |
+| 6 Health | ⏳ | health_monitor.py, scheduler |
+| 7 Docker | ⏳ | docker-compose, Dockerfile, Makefile |
+| 8 GraphRAG | 💡 Future | entities, relations, chunks + knowledge_worker (заменяет Notion) |
 
 Детали: `plans/progress.md`. Backlog рефакторинга там же.
 
