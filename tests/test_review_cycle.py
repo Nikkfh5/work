@@ -156,7 +156,9 @@ async def test_reviewer_approved_triggers_push(
             "supervisor.claude_runner.run_claude",
             AsyncMock(side_effect=mock_run_claude),
         ),
-        patch("supervisor.main.safe_exec", return_value=("", "", 0)) as mock_safe_exec,
+        patch(
+            "supervisor.stages.deliver.safe_exec", return_value=("", "", 0)
+        ) as mock_safe_exec,
     ):
         await run_worker_cycle(
             task, config, mock_tg_handler, db_path, mock_repo_manager
@@ -211,7 +213,7 @@ async def test_reviewer_needs_changes_retries(
             "supervisor.claude_runner.run_claude",
             AsyncMock(side_effect=mock_run_claude),
         ),
-        patch("supervisor.main.safe_exec", return_value=("", "", 0)),
+        patch("supervisor.stages.deliver.safe_exec", return_value=("", "", 0)),
     ):
         await run_worker_cycle(
             task, config, mock_tg_handler, db_path, mock_repo_manager
@@ -259,7 +261,7 @@ async def test_reviewer_exhausted_iterations(
             "supervisor.claude_runner.run_claude",
             AsyncMock(side_effect=mock_run_claude),
         ),
-        patch("supervisor.main.safe_exec", return_value=("", "", 0)),
+        patch("supervisor.stages.deliver.safe_exec", return_value=("", "", 0)),
     ):
         await run_worker_cycle(
             task, config, mock_tg_handler, db_path, mock_repo_manager
@@ -347,7 +349,7 @@ async def test_ci_failure_blocks_push(db_path, mock_tg_handler, mock_repo_manage
             "supervisor.claude_runner.run_claude",
             AsyncMock(side_effect=mock_run_claude),
         ),
-        patch("supervisor.main.safe_exec", side_effect=mock_safe_exec),
+        patch("supervisor.stages.deliver.safe_exec", side_effect=mock_safe_exec),
     ):
         await run_worker_cycle(
             task, config, mock_tg_handler, db_path, mock_repo_manager
@@ -392,7 +394,7 @@ async def test_reviewer_invalid_json(db_path, mock_tg_handler, mock_repo_manager
             "supervisor.claude_runner.run_claude",
             AsyncMock(side_effect=mock_run_claude),
         ),
-        patch("supervisor.main.safe_exec", return_value=("", "", 0)),
+        patch("supervisor.stages.deliver.safe_exec", return_value=("", "", 0)),
     ):
         await run_worker_cycle(
             task, config, mock_tg_handler, db_path, mock_repo_manager
@@ -482,7 +484,7 @@ async def test_ci_and_push_success(mock_repo_manager):
         },
     }
 
-    with patch("supervisor.main.safe_exec", return_value=("", "", 0)):
+    with patch("supervisor.stages.deliver.safe_exec", return_value=("", "", 0)):
         success, err = await _run_ci_and_push(
             task_id="abc123",
             job="job1",
@@ -518,7 +520,7 @@ async def test_ci_and_push_ci_fails(mock_repo_manager):
         # pytest fails
         return ("", "test failures", 1)
 
-    with patch("supervisor.main.safe_exec", side_effect=mock_safe_exec):
+    with patch("supervisor.stages.deliver.safe_exec", side_effect=mock_safe_exec):
         success, err = await _run_ci_and_push(
             task_id="abc123",
             job="job1",
