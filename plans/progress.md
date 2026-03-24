@@ -115,56 +115,129 @@ _Нет активных блокеров._
 - [ ] sequential thinking MCP, filesystem MCP, wcgw MCP
 - [ ] Декомпозиция main.py → отдельный `supervisor/worker_cycle.py`
 
-### Future: Фаза 8 — GraphRAG Memory для воркеров
+### Future: Фаза 8 — GraphRAG Memory (единый Knowledge Graph)
 
-**Проблема:** воркеры stateless. Если воркер второй раз фиксит баг в том же файле, он не помнит первый раз.
+**Проблема:** воркеры stateless + нет базы знаний. Воркер не помнит прошлые задачи, а пользователь не может закинуть документы/статьи для контекста.
 
-**Решение:** Полноценный GraphRAG — граф связей между задачами, файлами, решениями.
+**Решение:** Единый Knowledge Graph в SQLite — объединяет task memory И knowledge base.
 
-**Схема (SQLite, через migrate.py):**
+**Источник идеи:** MiroFish (github.com/666ghj/MiroFish) — seed-информация → extraction → граф.
+
+#### Схема (SQLite, через migrate.py)
+
 ```sql
--- Какие файлы менялись в каждой задаче
+-- ═══ Сущности (люди, библиотеки, концепции, файлы, паттерны) ═══
+CREATE TABLE entities (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,           -- person|library|concept|pattern|file|api|module
+    description TEXT,
+    source_type TEXT NOT NULL,    -- task|document|manual
+    source_id TEXT,               -- task_id или document_id
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ═══ Связи между сущностями ═══
+CREATE TABLE relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_a TEXT NOT NULL REFERENCES entities(id),
+    entity_b TEXT NOT NULL REFERENCES entities(id),
+    relation_type TEXT NOT NULL,  -- uses|implements|depends_on|related_to|same_file|followup|regression
+    context TEXT,                 -- краткое описание связи
+    confidence REAL DEFAULT 1.0,
+    source_type TEXT NOT NULL,    -- auto|extracted|manual
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ═══ Чанки (привязаны к сущностям) ═══
+CREATE TABLE chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content TEXT NOT NULL,
+    source_file TEXT,             -- путь к файлу-источнику
+    source_type TEXT NOT NULL,    -- task_log|document|article|code
+    entity_ids TEXT,              -- JSON list привязанных entity ids
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ═══ Task-specific memory (расширение) ═══
 CREATE TABLE task_files (
     task_id TEXT NOT NULL,
     file_path TEXT NOT NULL,
     repo_alias TEXT NOT NULL,
-    change_type TEXT DEFAULT 'modified',  -- modified|added|deleted
+    change_type TEXT DEFAULT 'modified',
     UNIQUE(task_id, file_path)
 );
 
--- Связи между задачами (автоматические + ручные)
-CREATE TABLE task_relations (
-    task_a TEXT NOT NULL,
-    task_b TEXT NOT NULL,
-    relation TEXT NOT NULL,  -- same_file|same_module|followup|regression
-    confidence REAL DEFAULT 1.0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Саммари решений (для промпта воркера)
 CREATE TABLE task_summaries (
     task_id TEXT NOT NULL PRIMARY KEY,
-    summary TEXT NOT NULL,          -- что сделал воркер (из result.notes)
-    error_summary TEXT,             -- если были проблемы
-    files_changed TEXT,             -- JSON list
-    tags TEXT,                      -- extracted: "auth, refresh_token, middleware"
-    embedding BLOB                  -- optional: для semantic search позже
+    summary TEXT NOT NULL,
+    error_summary TEXT,
+    files_changed TEXT,           -- JSON list
+    tags TEXT,                    -- extracted tags
+    embedding BLOB               -- optional: для semantic search
 );
 ```
 
-**Data flow:**
-1. Worker done → supervisor записывает в task_files + task_summaries (из parsed JSON)
-2. Supervisor автоматически строит task_relations: "task#55 трогает auth.py → task#38 и #42 тоже трогали auth.py → relation=same_file"
-3. При новой задаче: query граф → "все задачи с same_file relations → их summaries → top-k по релевантности"
-4. Релевантный контекст включается в промпт воркера: "Ранее в этих файлах: task#38 чинил refresh token, task#42 — повторный баг"
+#### Два потока данных
 
-**Что НЕ нужно (YAGNI):**
-- Neo4j / graph DB — SQLite + joins хватит
-- Embedding pipeline — начать без него, добавить позже
-- Zep Cloud — платный, не нужен
+**Поток 1: Task Memory (автоматический)**
+1. Worker done → supervisor записывает в task_files + task_summaries
+2. Claude извлекает entities из result (файлы, концепции) → entities + relations
+3. Автоматические relations: "task#55 и task#38 трогали один файл" → same_file
+
+**Поток 2: Knowledge Ingest (по запросу пользователя)**
+1. Пользователь кидает файл в TG → task type="knowledge_ingest"
+2. knowledge_worker (Claude CLI) извлекает entities + relations + key_facts
+3. Промпт:
+   ```
+   Прочитай документ. Извлеки:
+   1. ENTITIES — ключевые сущности (name, type, description)
+   2. RELATIONS — связи (entity_a, entity_b, type, context)
+   3. KEY_FACTS — главные факты (3-5 штук)
+   ```
+4. Supervisor сохраняет в граф + дедупликация entities по name+type
+
+#### Query при новой задаче
+```sql
+-- 1. Ключевые слова задачи → entities
+SELECT * FROM entities WHERE name LIKE '%auth%' OR description LIKE '%middleware%'
+
+-- 2. Связанные entities через relations (1 hop)
+SELECT e2.* FROM relations r JOIN entities e2 ON r.entity_b = e2.id
+WHERE r.entity_a IN (found_ids)
+
+-- 3. Chunks с контекстом
+SELECT content FROM chunks WHERE entity_ids LIKE '%found_id%'
+
+-- 4. Task summaries (если есть task-related entities)
+SELECT summary FROM task_summaries ts
+JOIN task_files tf ON ts.task_id = tf.task_id
+WHERE tf.file_path IN (related_files)
+```
+
+Результат → секция "Контекст из базы знаний" в промпте воркера.
+
+#### Новый воркер: knowledge_worker
+```yaml
+# config/agents.yaml
+knowledge_worker:
+    model: claude-opus-4-6
+    active: false  # включить в Фазе 8
+    is_knowledge: true
+    max_attempts: 2
+    mcp:
+      required: ["context7"]
+```
+
+#### Что НЕ нужно (YAGNI на старте)
+- Neo4j / graph DB — SQLite + joins
+- Embedding pipeline — начать без, добавить позже
+- Zep Cloud — платный
+- Frontend визуализация — Telegram достаточно
 
 **Зависимости:** Фазы 0-3 (done), migrate.py (done), json_guard (done)
 **Когда:** после Фазы 7 (Docker deploy), когда система стабильна
+**Оценка:** ~3-4 модуля (schema migration, knowledge_worker CLAUDE.md, graph_query.py, integration в промпт)
 
 ## Заметки для ретроспективы
 

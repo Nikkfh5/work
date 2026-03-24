@@ -72,7 +72,7 @@ plans/progress.md            трекер прогресса + backlog рефа�
 | 3 Review | ✅ Done | reviewer CLAUDE.md, итерации, ci → push |
 | 4 Escalation | ⏳ Next | escalation.py (5 сценариев), pending_approval |
 | 5-7 | ⏳ | notion, health, docker |
-| 8 GraphRAG | 💡 Future | task_files, task_relations, task_summaries — память воркеров |
+| 8 GraphRAG | 💡 Future | entities, relations, chunks, task_files, task_summaries + knowledge_worker |
 
 Детали: `plans/progress.md`. Backlog рефакторинга там же.
 

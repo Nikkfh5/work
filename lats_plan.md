@@ -1217,10 +1217,15 @@ WORKTREE_RETENTION_DAYS=7
 3. `Makefile`
 4. Деплой → `make setup-mcp` → `claude auth login` → `docker-compose up -d`
 
-*(Future / Фаза 8: GraphRAG Memory — граф связей задач/файлов/решений в SQLite.
-Воркер получает релевантный контекст из прошлых задач через graph traversal.
-Таблицы: task_files, task_relations, task_summaries. Без Neo4j, без embeddings на старте.
-Источник идеи: MiroFish (github.com/666ghj/MiroFish) — адаптировано под наш стек.)*
+*(Future / Фаза 8: GraphRAG Memory — единый Knowledge Graph в SQLite.
+Два потока: (1) Task Memory — автоматически после worker done (task_files, task_summaries,
+entities, relations); (2) Knowledge Ingest — пользователь кидает документ в TG →
+knowledge_worker извлекает entities/relations/facts через Claude → граф.
+Query: keywords → entities → relations (1 hop) → chunks → промпт воркера.
+Таблицы: entities, relations, chunks, task_files, task_summaries.
+Без Neo4j, без embeddings на старте. Новый воркер: knowledge_worker.
+Источник идеи: MiroFish (github.com/666ghj/MiroFish) — seed-info → graph extraction.
+Полный дизайн: plans/progress.md → "Future: Фаза 8".)*
 
 *(Future / Фаза 9: одноразовые воркер-контейнеры. Дизайн через safe_exec и
 worktrees это уже позволяет — реализовывать после стабильной Фазы 7.)*
