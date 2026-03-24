@@ -121,7 +121,7 @@ async def handle_worker_blocked(
     # Получаем порог из конфига
     supervisor_cfg = config.get("supervisor", {})
     threshold = int(
-        supervisor_cfg.get("reasoning_threshold", DEFAULT_SUPERVISOR_THRESHOLD)
+        supervisor_cfg.get("confidence_threshold", DEFAULT_SUPERVISOR_THRESHOLD)
     )
 
     reasoning = await supervisor_reasoning(question, task_context, db_path)

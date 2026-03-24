@@ -836,14 +836,25 @@ async def _handle_worker_result(
     elif worker_status == "blocked" or (
         worker_status == "done" and confidence < conf_threshold
     ):
+        from supervisor.escalation import handle_worker_blocked
+
+        task_dict = {
+            "id": task_id,
+            "assigned_worker": worker_id,
+            "description": parsed.get("_task_description", ""),
+        }
+        result = await handle_worker_blocked(
+            task_dict, parsed, config or {}, tg_handler, db_path
+        )
+        if result.startswith("directive:"):
+            # Supervisor auto-resolved — но для простоты пока just release blocked
+            # TODO: Phase 4+ — перезапуск воркера с directive
+            logger.info(
+                "run_worker_cycle: auto-resolved task_id=%s directive=%s",
+                task_id,
+                result[10:50],
+            )
         release_lease(task_id, worker_id, token, "blocked", db_path=db_path)
-        question = (
-            parsed.get("question") or f"confidence={confidence} < {conf_threshold}"
-        )
-        await tg_handler.notify_owner(
-            f"task#{task_id[:8]}: BLOCKED{attempt_note}. {question}\n"
-            f"Повтори: /retry {task_id[:8]}"
-        )
         logger.warning("run_worker_cycle: blocked task_id=%s", task_id)
 
     else:  # "error" от воркера — exhausted, финальный сбой
