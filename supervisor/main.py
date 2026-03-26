@@ -332,12 +332,7 @@ async def nightly_housekeeping(db_path: Optional[str] = None) -> None:
 from supervisor.summarizer import run_daily_summary  # noqa: E402
 
 
-async def run_health_check(
-    tg_handler: TelegramHandler,
-    db_path: Optional[str] = None,
-) -> None:
-    """Health check — stub, реализуется в Фазе 2."""
-    logger.info("run_health_check: stub — Phase 2")
+from supervisor.health_monitor import run_health_check  # noqa: E402
 
 
 # ── Signal handling ───────────────────────────────────────────────────────────
@@ -461,7 +456,7 @@ async def main() -> None:
             schedule_periodic(
                 health_hour,
                 health_days,
-                lambda: run_health_check(tg_handler, db_path),
+                lambda: run_health_check(tg_handler, db_path, config),
             ),
             name="health_check",
         ),
