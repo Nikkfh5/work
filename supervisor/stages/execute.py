@@ -25,7 +25,6 @@ from supervisor.pipeline import (
     E_WORKER_CRASH,
     WorkerContext,
     _fail_final,
-    _notify_failure,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,9 +116,12 @@ async def execute_stage(ctx: WorkerContext) -> None:
     При успехе заполняет ctx.parsed, ctx.worker_status, ctx.confidence.
     При провале — raise WorkerCrash / StageError.
     """
-    from supervisor.claude_runner import ClaudeRunnerError, run_claude
+    from supervisor.claude_runner import ClaudeRunnerError
+    from supervisor.claude_runner import run_claude as _default_runner
     from supervisor.json_guard import extract_json, validate_worker_schema
     from supervisor.run_logger import log_run
+
+    runner = ctx.runner or _default_runner
 
     last_stdout = ""
     use_correction = False
@@ -147,7 +149,7 @@ async def execute_stage(ctx: WorkerContext) -> None:
 
         # Запустить claude CLI
         try:
-            stdout = await run_claude(
+            stdout = await runner(
                 prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout
             )
             last_stdout = stdout
@@ -165,7 +167,11 @@ async def execute_stage(ctx: WorkerContext) -> None:
                 E_SAFEEXEC_TIMEOUT,
                 ctx.db_path,
             )
-            await _notify_failure(ctx.tg_handler, ctx.task_id, "таймаут воркера.")
+            ctx.emit(
+                "task_failed",
+                reason="safeexec_timeout",
+                message="\u0442\u0430\u0439\u043c\u0430\u0443\u0442 \u0432\u043e\u0440\u043a\u0435\u0440\u0430.",
+            )
             return
         except ClaudeRunnerError as exc:
             logger.error(
@@ -182,10 +188,14 @@ async def execute_stage(ctx: WorkerContext) -> None:
                     E_WORKER_CRASH,
                     ctx.db_path,
                 )
-                await _notify_failure(
-                    ctx.tg_handler,
-                    ctx.task_id,
-                    f"воркер упал {ctx.max_attempts}\u00d7 подряд.\n{str(exc)[:150]}",
+                ctx.emit(
+                    "task_failed",
+                    reason="worker_crash",
+                    message=(
+                        f"\u0432\u043e\u0440\u043a\u0435\u0440 \u0443\u043f\u0430\u043b "
+                        f"{ctx.max_attempts}\u00d7 \u043f\u043e\u0434\u0440\u044f\u0434.\n"
+                        f"{str(exc)[:150]}"
+                    ),
                 )
                 return
             logger.warning(
@@ -229,10 +239,13 @@ async def execute_stage(ctx: WorkerContext) -> None:
                     reason,
                     ctx.db_path,
                 )
-                await _notify_failure(
-                    ctx.tg_handler,
-                    ctx.task_id,
-                    f"воркер не дал JSON {ctx.max_attempts}\u00d7 ({err}).",
+                ctx.emit(
+                    "task_failed",
+                    reason=reason,
+                    message=(
+                        f"\u0432\u043e\u0440\u043a\u0435\u0440 \u043d\u0435 \u0434\u0430\u043b "
+                        f"JSON {ctx.max_attempts}\u00d7 ({err})."
+                    ),
                 )
                 return
             use_correction = True

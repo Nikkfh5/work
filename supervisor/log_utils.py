@@ -56,5 +56,7 @@ def redact(text: str) -> str:
             result = pattern.sub(replacement, result)
         return result
     except Exception:
-        logger.warning("redact() failed — returning original text (possible secret leak)")
+        logger.warning(
+            "redact() failed — returning original text (possible secret leak)"
+        )
         return text

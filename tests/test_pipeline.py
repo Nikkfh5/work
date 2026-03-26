@@ -12,7 +12,7 @@ tests/test_pipeline.py — тесты для supervisor/pipeline.py (pipeline en
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from supervisor.pipeline import (
     WorkerContext,
@@ -251,4 +251,252 @@ async def test_stage_error_with_notify_false(db_path):
         raise StageError(reason="test_reason", message="silent", notify=False)
 
     await run_pipeline(ctx, [stage_silent_fail])
+    ctx.tg_handler.notify_owner.assert_not_called()
+
+
+# ── test_di_runner_used ────────────────────────────────────────────────────
+
+
+WORKER_DONE_JSON = """\
+<<<JSON>>>
+{
+  "status": "done",
+  "confidence": 95,
+  "result": {"repos": [], "notes": "DI test"},
+  "question": null
+}
+<<<END>>>
+"""
+
+
+@pytest.mark.asyncio
+async def test_di_runner_used(db_path):
+    """ctx.runner is set → execute_stage uses it instead of real run_claude."""
+    from supervisor.stages.execute import execute_stage
+
+    mock_runner = AsyncMock(return_value=WORKER_DONE_JSON)
+    ctx = _make_ctx(db_path=db_path, runner=mock_runner, max_attempts=1)
+
+    # Patch log_run to avoid file I/O
+    with patch("supervisor.run_logger.log_run"):
+        await execute_stage(ctx)
+
+    # DI runner was called
+    mock_runner.assert_awaited_once()
+    # Result parsed from DI runner output
+    assert ctx.parsed is not None
+    assert ctx.worker_status == "done"
+    assert ctx.confidence == 95
+
+
+@pytest.mark.asyncio
+async def test_di_runner_not_set_uses_default(db_path):
+    """ctx.runner=None → execute_stage falls back to real run_claude (patched)."""
+    from supervisor.stages.execute import execute_stage
+
+    default_mock = AsyncMock(return_value=WORKER_DONE_JSON)
+    ctx = _make_ctx(db_path=db_path, max_attempts=1)
+    assert ctx.runner is None
+
+    with (
+        patch("supervisor.claude_runner.run_claude", default_mock),
+        patch("supervisor.run_logger.log_run"),
+    ):
+        await execute_stage(ctx)
+
+    # Default runner (patched via old path) was called
+    default_mock.assert_awaited_once()
+    assert ctx.parsed is not None
+    assert ctx.worker_status == "done"
+
+
+# ── test_di_executor_used ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_di_executor_used(db_path):
+    """ctx.executor is set → deliver_stage uses it instead of real safe_exec."""
+    from supervisor.stages.deliver import deliver_stage
+
+    mock_executor = MagicMock(return_value=("", "", 0))
+    mock_repo_mgr = MagicMock()
+    mock_repo_mgr._worktree_path = MagicMock(return_value="/fake/wt")
+
+    ctx = _make_ctx(
+        db_path=db_path,
+        executor=mock_executor,
+        repo_manager=mock_repo_mgr,
+        token="tok-123",
+        worker_status="done",
+        parsed={
+            "status": "done",
+            "confidence": 90,
+            "result": {"repos": [], "notes": "test"},
+        },
+        repos_context=[{"alias": "api", "path": "/fake/wt"}],
+        worker_cfg={
+            "repos": [{"alias": "api"}],
+        },
+    )
+
+    # Patch release_lease to avoid DB interaction
+    with patch("supervisor.stages.deliver.release_lease"):
+        await deliver_stage(ctx)
+
+    # DI executor was called (git add, commit, push at minimum)
+    assert mock_executor.call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_di_executor_not_set_uses_default(db_path):
+    """ctx.executor=None → deliver_stage falls back to safe_exec (patched)."""
+    from supervisor.stages.deliver import deliver_stage
+
+    mock_repo_mgr = MagicMock()
+    mock_repo_mgr._worktree_path = MagicMock(return_value="/fake/wt")
+
+    ctx = _make_ctx(
+        db_path=db_path,
+        repo_manager=mock_repo_mgr,
+        token="tok-123",
+        worker_status="done",
+        parsed={
+            "status": "done",
+            "confidence": 90,
+            "result": {"repos": [], "notes": "test"},
+        },
+        repos_context=[{"alias": "api", "path": "/fake/wt"}],
+        worker_cfg={
+            "repos": [{"alias": "api"}],
+        },
+    )
+    assert ctx.executor is None
+
+    # Patch via old path — backward compatible
+    with (
+        patch(
+            "supervisor.stages.deliver.safe_exec", return_value=("", "", 0)
+        ) as default_mock,
+        patch("supervisor.stages.deliver.release_lease"),
+    ):
+        await deliver_stage(ctx)
+
+    # Old-style patching still works
+    assert default_mock.call_count >= 2
+
+
+# ── Event bus tests ──────────────────────────────────────────────────────────
+
+
+def test_emit_and_drain_events():
+    """ctx.emit records events; drain_events returns and clears them."""
+    ctx = _make_ctx()
+    assert ctx.drain_events() == []
+
+    ctx.emit("task_done", confidence=90, notes="ok")
+    ctx.emit("task_failed", reason="crash", message="boom")
+
+    events = ctx.drain_events()
+    assert len(events) == 2
+    assert events[0] == {"type": "task_done", "data": {"confidence": 90, "notes": "ok"}}
+    assert events[1] == {
+        "type": "task_failed",
+        "data": {"reason": "crash", "message": "boom"},
+    }
+    # After drain, list is empty
+    assert ctx.drain_events() == []
+
+
+@pytest.mark.asyncio
+async def test_events_dispatched_after_stage():
+    """Stage emits event -> handle_events dispatches it via tg_handler."""
+    ctx = _make_ctx()
+
+    async def stage_emitter(c):
+        c.emit("task_done", confidence=95, notes="all good")
+
+    await run_pipeline(ctx, [stage_emitter])
+
+    ctx.tg_handler.notify_owner.assert_called_once()
+    msg = ctx.tg_handler.notify_owner.call_args[0][0]
+    assert "DONE" in msg
+    assert "95" in msg
+
+
+@pytest.mark.asyncio
+async def test_task_failed_event_on_stage_error(db_path):
+    """StageError with notify=True -> task_failed event dispatched via bus."""
+    from storage.db import create_task
+
+    create_task(
+        source="telegram",
+        source_contact="@user",
+        assigned_worker="job1_worker",
+        description="test",
+        client_contact="42",
+    )
+
+    ctx = _make_ctx(db_path=db_path, token="tok-123")
+
+    async def stage_fail(c):
+        raise WorkerCrash(reason="worker_crash", message="boom")
+
+    await run_pipeline(ctx, [stage_fail])
+
+    # Event bus dispatched the failure via tg_handler.notify_owner
+    ctx.tg_handler.notify_owner.assert_called_once()
+    msg = ctx.tg_handler.notify_owner.call_args[0][0]
+    assert "boom" in msg
+
+
+@pytest.mark.asyncio
+async def test_multiple_events_in_single_stage():
+    """Stage emits multiple events -> all dispatched after stage."""
+    ctx = _make_ctx()
+
+    async def stage_multi(c):
+        c.emit("review_approved", message="APPROVED ok")
+        c.emit("task_done", confidence=80, notes="done")
+
+    await run_pipeline(ctx, [stage_multi])
+
+    assert ctx.tg_handler.notify_owner.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_events_dispatched_per_stage():
+    """Events from stage_a dispatched before stage_b runs."""
+    ctx = _make_ctx()
+    dispatch_order = []
+
+    original_notify = ctx.tg_handler.notify_owner
+
+    async def tracking_notify(msg):
+        dispatch_order.append(msg)
+        return await original_notify(msg)
+
+    ctx.tg_handler.notify_owner = AsyncMock(side_effect=tracking_notify)
+
+    async def stage_a(c):
+        c.emit("task_done", confidence=90, notes="a done")
+
+    async def stage_b(c):
+        # By the time stage_b runs, stage_a events should already be dispatched
+        assert len(dispatch_order) == 1
+
+    await run_pipeline(ctx, [stage_a, stage_b])
+
+
+@pytest.mark.asyncio
+async def test_unknown_event_type_logged_no_crash():
+    """Unknown event type is logged but pipeline does not crash."""
+    ctx = _make_ctx()
+
+    async def stage_unknown(c):
+        c.emit("nonexistent_event_type", foo="bar")
+
+    # Should not raise
+    await run_pipeline(ctx, [stage_unknown])
+
+    # tg_handler.notify_owner should NOT be called for unknown events
     ctx.tg_handler.notify_owner.assert_not_called()

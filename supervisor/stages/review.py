@@ -30,7 +30,6 @@ from supervisor.pipeline import (
     E_WORKER_CRASH,
     WorkerContext,
     _fail_final,
-    _notify_failure,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,10 +160,13 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
     При APPROVED -> ctx.worker_status остаётся "done" для deliver stage.
     При exhausted iterations -> release_lease requires_manual + TG.
     """
-    from supervisor.claude_runner import ClaudeRunnerError, run_claude
+    from supervisor.claude_runner import ClaudeRunnerError
+    from supervisor.claude_runner import run_claude as _default_runner
     from supervisor.json_guard import extract_json, validate_reviewer_schema
     from supervisor.json_guard import validate_worker_schema
     from supervisor.run_logger import log_run
+
+    runner = ctx.runner or _default_runner
 
     worker_cfg = ctx.worker_cfg
     reviewer_id = worker_cfg.get("reviewer_id")
@@ -187,7 +189,7 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
 
         # Run reviewer
         try:
-            reviewer_stdout = await run_claude(
+            reviewer_stdout = await runner(
                 reviewer_prompt, cwd=reviewer_dir, timeout=ctx.worker_timeout
             )
         except (ClaudeRunnerError, asyncio.TimeoutError) as exc:
@@ -197,8 +199,10 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             _fail_final(
                 ctx.task_id, ctx.worker_id, ctx.token, E_REVIEWER_CRASH, ctx.db_path
             )
-            await _notify_failure(
-                ctx.tg_handler, ctx.task_id, f"reviewer crashed: {str(exc)[:150]}"
+            ctx.emit(
+                "task_failed",
+                reason="reviewer_crash",
+                message=f"reviewer crashed: {str(exc)[:150]}",
             )
             ctx.worker_status = "_review_handled"
             return
@@ -231,10 +235,10 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             _fail_final(
                 ctx.task_id, ctx.worker_id, ctx.token, E_JSON_SCHEMA, ctx.db_path
             )
-            await _notify_failure(
-                ctx.tg_handler,
-                ctx.task_id,
-                f"reviewer JSON invalid: {reviewer_err[:150]}",
+            ctx.emit(
+                "task_failed",
+                reason="json_schema_invalid",
+                message=f"reviewer JSON invalid: {reviewer_err[:150]}",
             )
             ctx.worker_status = "_review_handled"
             return
@@ -266,11 +270,12 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
                 ctx.db_path,
             )
             feedback = reviewer_parsed.get("feedback", "")
-            await ctx.tg_handler.notify_owner(
-                f"task#{ctx.task_id[:8]}: review exhausted "
-                f"({max_iterations} iterations).\n"
-                f"{feedback[:200]}\n"
-                f"Повтори: /retry {ctx.task_id[:8]}"
+            ctx.emit(
+                "task_failed",
+                reason="review_exhausted",
+                message=(
+                    f"review exhausted ({max_iterations} iterations).\n{feedback[:200]}"
+                ),
             )
             logger.warning(
                 "review_stage: exhausted task_id=%s iterations=%d",
@@ -294,7 +299,7 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
         )
 
         try:
-            worker_stdout = await run_claude(
+            worker_stdout = await runner(
                 retry_prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout
             )
         except (ClaudeRunnerError, asyncio.TimeoutError) as exc:
@@ -306,10 +311,10 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             _fail_final(
                 ctx.task_id, ctx.worker_id, ctx.token, E_WORKER_CRASH, ctx.db_path
             )
-            await _notify_failure(
-                ctx.tg_handler,
-                ctx.task_id,
-                f"worker retry crashed: {str(exc)[:150]}",
+            ctx.emit(
+                "task_failed",
+                reason="worker_crash",
+                message=f"worker retry crashed: {str(exc)[:150]}",
             )
             ctx.worker_status = "_review_handled"
             return
@@ -342,10 +347,10 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             _fail_final(
                 ctx.task_id, ctx.worker_id, ctx.token, E_JSON_SCHEMA, ctx.db_path
             )
-            await _notify_failure(
-                ctx.tg_handler,
-                ctx.task_id,
-                f"worker retry JSON invalid: {worker_err[:150]}",
+            ctx.emit(
+                "task_failed",
+                reason="json_schema_invalid",
+                message=f"worker retry JSON invalid: {worker_err[:150]}",
             )
             ctx.worker_status = "_review_handled"
             return
@@ -410,11 +415,7 @@ async def review_stage(ctx: WorkerContext) -> None:
 
     # "error" от воркера
     _fail_final(ctx.task_id, ctx.worker_id, ctx.token, E_WORKER_CRASH, ctx.db_path)
-    await _notify_failure(
-        ctx.tg_handler,
-        ctx.task_id,
-        "воркер вернул error.",
-    )
+    ctx.emit("task_failed", reason="worker_crash", message="воркер вернул error.")
     logger.error(
         "review_stage: worker_error task_id=%s status=%s",
         ctx.task_id,

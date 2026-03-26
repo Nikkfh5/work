@@ -13,7 +13,7 @@ supervisor/pipeline.py — Pipeline engine, WorkerContext dataclass, StageError 
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from storage.db import get_conn
 from supervisor.lease_manager import release_lease
@@ -50,6 +50,7 @@ class WorkerContext:
 
     # Lease
     token: str = ""
+    lease_ttl: int = 300
 
     # Worktree
     repos: list = field(default_factory=list)
@@ -70,6 +71,23 @@ class WorkerContext:
     parsed: Optional[dict] = None
     worker_status: str = ""
     confidence: int = 0
+
+    # DI: injectable dependencies (None -> use real implementations)
+    runner: Optional[Callable] = None  # run_claude replacement
+    executor: Optional[Callable] = None  # safe_exec replacement
+
+    # Event bus
+    _events: list = field(default_factory=list, repr=False)
+
+    def emit(self, event_type: str, **kwargs) -> None:
+        """Record an event. Processed by handle_events after each stage."""
+        self._events.append({"type": event_type, "data": kwargs})
+
+    def drain_events(self) -> list:
+        """Return all accumulated events and clear the internal list."""
+        events = self._events.copy()
+        self._events.clear()
+        return events
 
 
 # ── StageError hierarchy ─────────────────────────────────────────────────────
@@ -148,9 +166,9 @@ def _fail_final(
 
 
 async def _notify_failure(tg_handler, task_id: str, message: str) -> None:
-    """Async helper: уведомить владельца об ошибке задачи."""
+    """Async helper: уведомить владельца об ошибке задачи (legacy, kept for compat)."""
     await tg_handler.notify_owner(
-        f"\u26a0\ufe0f task#{task_id[:8]}: {message}\nПовтори: /retry {task_id[:8]}"
+        f"\u26a0\ufe0f task#{task_id[:8]}: {message}\n\u041f\u043e\u0432\u0442\u043e\u0440\u0438: /retry {task_id[:8]}"
     )
 
 
@@ -170,19 +188,26 @@ async def run_pipeline(ctx: WorkerContext, stages: list) -> None:
     """
     Прогнать ctx через stages. Обработать ошибки, cleanup в finally.
 
+    After each stage (and on errors), accumulated events are dispatched
+    via handle_events from supervisor.event_handlers.
+
     Args:
-        ctx: WorkerContext — мутируется каждым stage
+        ctx: WorkerContext -- mutated by each stage
         stages: list[Callable[[WorkerContext], Awaitable[None]]]
     """
+    from supervisor.event_handlers import handle_events
+
     try:
         for stage in stages:
             await stage(ctx)
+            await handle_events(ctx)
     except LeaseConflict:
         logger.warning("pipeline: lease conflict task_id=%s", ctx.task_id)
     except StageError as e:
         _fail_final(ctx.task_id, ctx.worker_id, ctx.token, e.reason, ctx.db_path)
         if e.notify:
-            await _notify_failure(ctx.tg_handler, ctx.task_id, str(e))
+            ctx.emit("task_failed", reason=e.reason, message=str(e))
+            await handle_events(ctx)
     except Exception as exc:
         logger.error("pipeline: unexpected error task_id=%s: %s", ctx.task_id, exc)
         _set_error_reason(ctx.task_id, E_WORKER_CRASH, ctx.db_path)

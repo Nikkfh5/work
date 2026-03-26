@@ -4,7 +4,6 @@ tests/test_json_guard.py — тесты для supervisor/json_guard.py
 Запуск: pytest tests/test_json_guard.py -v
 """
 
-import pytest
 from supervisor.json_guard import (
     extract_json,
     validate_worker_schema,
@@ -84,6 +83,7 @@ def test_extract_json_array_returns_none():
 
 # ── validate_worker_schema ───────────────────────────────────────────────────
 
+
 def test_worker_schema_happy_path():
     ok, msg = validate_worker_schema(WORKER_JSON)
     assert ok is True
@@ -91,7 +91,12 @@ def test_worker_schema_happy_path():
 
 
 def test_worker_schema_blocked_status():
-    obj = {"status": "blocked", "confidence": 50, "result": None, "question": "Как быть?"}
+    obj = {
+        "status": "blocked",
+        "confidence": 50,
+        "result": None,
+        "question": "Как быть?",
+    }
     ok, msg = validate_worker_schema(obj)
     assert ok is True
 
@@ -251,6 +256,7 @@ def test_health_schema_yellow_with_findings():
 
 def test_health_schema_invalid_overall():
     import copy
+
     obj = copy.deepcopy(HEALTH_JSON)
     obj["health"]["overall"] = "ORANGE"
     ok, msg = validate_health_schema(obj)
@@ -260,6 +266,7 @@ def test_health_schema_invalid_overall():
 
 def test_health_schema_invalid_finding_severity():
     import copy
+
     obj = copy.deepcopy(HEALTH_WITH_FINDINGS)
     obj["health"]["findings"][0]["severity"] = "critical"
     ok, msg = validate_health_schema(obj)
@@ -277,6 +284,7 @@ def test_health_schema_missing_health_key():
 
 def test_health_schema_create_tasks_missing_field():
     import copy
+
     obj = copy.deepcopy(HEALTH_JSON)
     obj["health"]["create_tasks"] = [{"title": "X"}]  # missing summary, priority
     ok, msg = validate_health_schema(obj)

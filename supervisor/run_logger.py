@@ -14,7 +14,6 @@ supervisor/run_logger.py — запись stdout/stderr агентов в фай
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -85,18 +84,28 @@ def log_run(
     try:
         Path(stdout_path).write_text(safe_stdout, encoding="utf-8")
     except OSError as exc:
-        logger.error("run_logger: failed to write stdout log task_id=%s phase=%s: %s",
-                     task_id, phase, exc)
+        logger.error(
+            "run_logger: failed to write stdout log task_id=%s phase=%s: %s",
+            task_id,
+            phase,
+            exc,
+        )
 
     try:
         Path(stderr_path).write_text(safe_stderr, encoding="utf-8")
     except OSError as exc:
-        logger.error("run_logger: failed to write stderr log task_id=%s phase=%s: %s",
-                     task_id, phase, exc)
+        logger.error(
+            "run_logger: failed to write stderr log task_id=%s phase=%s: %s",
+            task_id,
+            phase,
+            exc,
+        )
 
     # Создаём запись в task_runs
     finished_at_iso = now.strftime("%Y-%m-%d %H:%M:%S")
-    started_at_iso = started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else finished_at_iso
+    started_at_iso = (
+        started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else finished_at_iso
+    )
     parsed_json_str = json.dumps(parsed_json) if parsed_json is not None else None
     json_valid_int = 1 if json_valid else 0
 
@@ -110,27 +119,38 @@ def log_run(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    task_id, phase, attempt,
-                    started_at_iso, finished_at_iso,
-                    returncode, stdout_path, stderr_path,
-                    parsed_json_str, json_valid_int,
+                    task_id,
+                    phase,
+                    attempt,
+                    started_at_iso,
+                    finished_at_iso,
+                    returncode,
+                    stdout_path,
+                    stderr_path,
+                    parsed_json_str,
+                    json_valid_int,
                 ),
             )
         logger.debug(
             "run_logger: recorded task_run task_id=%s phase=%s attempt=%d",
-            task_id, phase, attempt,
+            task_id,
+            phase,
+            attempt,
         )
     except Exception as exc:
         logger.error(
             "run_logger: failed to insert task_run task_id=%s phase=%s: %s",
-            task_id, phase, exc,
+            task_id,
+            phase,
+            exc,
         )
 
     return stdout_path, stderr_path
 
 
-def get_run_logs(task_id: str, phase: Optional[str] = None,
-                 db_path: Optional[str] = None) -> list[dict]:
+def get_run_logs(
+    task_id: str, phase: Optional[str] = None, db_path: Optional[str] = None
+) -> list[dict]:
     """
     Получить записи task_runs для задачи.
 

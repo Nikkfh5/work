@@ -36,6 +36,7 @@ VALID_HEALTH_SEVERITIES = {"low", "med", "high"}
 
 # ── Извлечение JSON ──────────────────────────────────────────────────────────
 
+
 def extract_json(raw: str) -> Optional[dict]:
     """
     Извлечь JSON-объект из строки вывода агента.
@@ -58,7 +59,7 @@ def extract_json(raw: str) -> Optional[dict]:
     end = raw.find(JSON_END_MARKER)
 
     if start != -1 and end != -1 and end > start:
-        json_text = raw[start + len(JSON_START_MARKER):end].strip()
+        json_text = raw[start + len(JSON_START_MARKER) : end].strip()
         parsed = _try_parse(json_text, source="markers")
         if parsed is not None:
             return parsed
@@ -90,6 +91,7 @@ def _try_parse(text: str, source: str) -> Optional[dict]:
 
 # ── Валидация схем ───────────────────────────────────────────────────────────
 
+
 def validate_worker_schema(obj: dict) -> tuple[bool, str]:
     """
     Валидировать JSON от Worker-агента.
@@ -108,11 +110,17 @@ def validate_worker_schema(obj: dict) -> tuple[bool, str]:
 
     status = obj.get("status")
     if status not in VALID_WORKER_STATUSES:
-        return False, f"worker schema: status={status!r} must be one of {VALID_WORKER_STATUSES}"
+        return (
+            False,
+            f"worker schema: status={status!r} must be one of {VALID_WORKER_STATUSES}",
+        )
 
     confidence = obj.get("confidence")
     if not isinstance(confidence, (int, float)) or not (0 <= confidence <= 100):
-        return False, f"worker schema: confidence={confidence!r} must be a number 0..100"
+        return (
+            False,
+            f"worker schema: confidence={confidence!r} must be a number 0..100",
+        )
 
     result = obj.get("result")
     if status == "done":
@@ -127,12 +135,18 @@ def validate_worker_schema(obj: dict) -> tuple[bool, str]:
             if "alias" not in repo:
                 return False, f"worker schema: result.repos[{i}] missing 'alias'"
             if "changed_files" not in repo:
-                return False, f"worker schema: result.repos[{i}] missing 'changed_files'"
+                return (
+                    False,
+                    f"worker schema: result.repos[{i}] missing 'changed_files'",
+                )
 
     # question может быть null или str
     question = obj.get("question")
     if question is not None and not isinstance(question, str):
-        return False, f"worker schema: question must be string or null, got {type(question).__name__}"
+        return (
+            False,
+            f"worker schema: question must be string or null, got {type(question).__name__}",
+        )
 
     return True, ""
 
@@ -154,11 +168,17 @@ def validate_reviewer_schema(obj: dict) -> tuple[bool, str]:
 
     verdict = obj.get("verdict")
     if verdict not in VALID_REVIEWER_VERDICTS:
-        return False, f"reviewer schema: verdict={verdict!r} must be one of {VALID_REVIEWER_VERDICTS}"
+        return (
+            False,
+            f"reviewer schema: verdict={verdict!r} must be one of {VALID_REVIEWER_VERDICTS}",
+        )
 
     feedback = obj.get("feedback")
     if not isinstance(feedback, str):
-        return False, f"reviewer schema: feedback must be a string, got {type(feedback).__name__}"
+        return (
+            False,
+            f"reviewer schema: feedback must be a string, got {type(feedback).__name__}",
+        )
 
     issues = obj.get("issues")
     if not isinstance(issues, list):
@@ -196,11 +216,17 @@ def validate_health_schema(obj: dict) -> tuple[bool, str]:
 
     status = obj.get("status")
     if status not in VALID_WORKER_STATUSES:
-        return False, f"health schema: status={status!r} must be one of {VALID_WORKER_STATUSES}"
+        return (
+            False,
+            f"health schema: status={status!r} must be one of {VALID_WORKER_STATUSES}",
+        )
 
     confidence = obj.get("confidence")
     if not isinstance(confidence, (int, float)) or not (0 <= confidence <= 100):
-        return False, f"health schema: confidence={confidence!r} must be a number 0..100"
+        return (
+            False,
+            f"health schema: confidence={confidence!r} must be a number 0..100",
+        )
 
     health = obj.get("health")
     if not isinstance(health, dict):
@@ -208,7 +234,10 @@ def validate_health_schema(obj: dict) -> tuple[bool, str]:
 
     overall = health.get("overall")
     if overall not in VALID_HEALTH_OVERALL:
-        return False, f"health schema: health.overall={overall!r} must be one of {VALID_HEALTH_OVERALL}"
+        return (
+            False,
+            f"health schema: health.overall={overall!r} must be one of {VALID_HEALTH_OVERALL}",
+        )
 
     findings = health.get("findings")
     if not isinstance(findings, list):
@@ -219,7 +248,10 @@ def validate_health_schema(obj: dict) -> tuple[bool, str]:
             return False, f"health schema: findings[{i}] must be an object"
         severity = finding.get("severity")
         if severity not in VALID_HEALTH_SEVERITIES:
-            return False, f"health schema: findings[{i}].severity={severity!r} must be one of {VALID_HEALTH_SEVERITIES}"
+            return (
+                False,
+                f"health schema: findings[{i}].severity={severity!r} must be one of {VALID_HEALTH_SEVERITIES}",
+            )
         for field in ("title", "evidence", "suggestion"):
             if field not in finding:
                 return False, f"health schema: findings[{i}] missing '{field}'"
@@ -241,6 +273,6 @@ def validate_health_schema(obj: dict) -> tuple[bool, str]:
 
     question = obj.get("question")
     if question is not None and not isinstance(question, str):
-        return False, f"health schema: question must be string or null"
+        return False, "health schema: question must be string or null"
 
     return True, ""

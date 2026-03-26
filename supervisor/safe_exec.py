@@ -30,22 +30,53 @@ logger = logging.getLogger(__name__)
 MAX_OUTPUT_BYTES = 10 * 1024 * 1024
 
 # Базовый безопасный env — передаём только нейтральные переменные
-SAFE_ENV_KEYS = {"PATH", "HOME", "USER", "LANG", "LC_ALL", "GOPATH", "GOROOT",
-                 "PYTHONPATH", "VIRTUAL_ENV", "NODE_PATH"}
+SAFE_ENV_KEYS = {
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "LC_ALL",
+    "GOPATH",
+    "GOROOT",
+    "PYTHONPATH",
+    "VIRTUAL_ENV",
+    "NODE_PATH",
+}
 
 # Паттерны аргументов которые НИКОГДА не разрешены ни в какой команде
 BLOCKED_ARG_PATTERNS = [
-    "--upload-pack", "--exec", "mkfs", "shutdown", "reboot",
+    "--upload-pack",
+    "--exec",
+    "mkfs",
+    "shutdown",
+    "reboot",
 ]
 
 # Профили команд: cmd[0] → правила проверки
 COMMAND_PROFILES: dict[str, dict] = {
     "git": {
         "allowed_subcommands": [
-            "clone", "fetch", "worktree", "add", "commit",
-            "push", "diff", "log", "status", "gc", "prune",
-            "init", "checkout", "branch", "remote", "config",
-            "rev-parse", "show", "cat-file", "ls-files", "stash",
+            "clone",
+            "fetch",
+            "worktree",
+            "add",
+            "commit",
+            "push",
+            "diff",
+            "log",
+            "status",
+            "gc",
+            "prune",
+            "init",
+            "checkout",
+            "branch",
+            "remote",
+            "config",
+            "rev-parse",
+            "show",
+            "cat-file",
+            "ls-files",
+            "stash",
         ],
         "blocked_flags": ["-c", "--upload-pack", "--exec"],
     },
@@ -73,14 +104,30 @@ COMMAND_PROFILES: dict[str, dict] = {
 
 # Команды которые НИКОГДА не разрешены
 DENYLIST_COMMANDS = {
-    "rm", "sudo", "chmod", "chown", "dd", "mkfs", "kill",
-    "shutdown", "reboot", "poweroff", "wget", "curl", "nc",
-    "ssh", "scp", "rsync", "docker", "kubectl",
+    "rm",
+    "sudo",
+    "chmod",
+    "chown",
+    "dd",
+    "mkfs",
+    "kill",
+    "shutdown",
+    "reboot",
+    "poweroff",
+    "wget",
+    "curl",
+    "nc",
+    "ssh",
+    "scp",
+    "rsync",
+    "docker",
+    "kubectl",
 }
 
 
 class SafeExecError(Exception):
     """Команда заблокирована allowlist-ом или нарушает политику."""
+
     pass
 
 
@@ -114,17 +161,13 @@ def _check_cmd(cmd: list[str]) -> None:
     # Абсолютный denylist
     prog_name = Path(program).name
     if prog_name in DENYLIST_COMMANDS:
-        raise SafeExecError(
-            f"safe_exec: program {program!r} is in DENYLIST_COMMANDS"
-        )
+        raise SafeExecError(f"safe_exec: program {program!r} is in DENYLIST_COMMANDS")
 
     # Проверка заблокированных аргументов
     for arg in cmd[1:]:
         for blocked in BLOCKED_ARG_PATTERNS:
             if arg == blocked or arg.startswith(blocked + "="):
-                raise SafeExecError(
-                    f"safe_exec: blocked argument {arg!r} in command"
-                )
+                raise SafeExecError(f"safe_exec: blocked argument {arg!r} in command")
 
     # Проверка по профилю
     profile = COMMAND_PROFILES.get(prog_name)
@@ -152,9 +195,7 @@ def _check_cmd(cmd: list[str]) -> None:
         for arg in args:
             for flag in profile["blocked_flags"]:
                 if arg == flag or arg.startswith(flag + "="):
-                    raise SafeExecError(
-                        f"safe_exec: git flag {arg!r} is blocked"
-                    )
+                    raise SafeExecError(f"safe_exec: git flag {arg!r} is blocked")
 
     # Для npm run: проверяем allowed_run_scripts
     if prog_name == "npm" and len(args) >= 2 and args[0] == "run":
@@ -249,7 +290,9 @@ def safe_exec(
     except subprocess.TimeoutExpired:
         logger.error(
             "safe_exec timeout cmd=%s cwd=%s timeout=%d",
-            cmd[0], cwd, timeout,
+            cmd[0],
+            cwd,
+            timeout,
         )
         raise
 
@@ -268,7 +311,8 @@ def safe_exec(
     if truncated:
         logger.warning(
             "safe_exec: output truncated at %d bytes cmd=%s",
-            MAX_OUTPUT_BYTES, cmd[0],
+            MAX_OUTPUT_BYTES,
+            cmd[0],
         )
 
     stdout = stdout_bytes.decode("utf-8", errors="replace")
@@ -277,7 +321,9 @@ def safe_exec(
     if proc.returncode != 0:
         logger.warning(
             "safe_exec cmd=%s returncode=%d cwd=%s",
-            cmd[0], proc.returncode, cwd,
+            cmd[0],
+            proc.returncode,
+            cwd,
         )
 
     return stdout, stderr, proc.returncode
@@ -336,7 +382,8 @@ async def safe_exec_async(
     if proc.returncode != 0:
         logger.warning(
             "safe_exec_async cmd=%s returncode=%d",
-            cmd[0], proc.returncode,
+            cmd[0],
+            proc.returncode,
         )
 
     return stdout, stderr, proc.returncode

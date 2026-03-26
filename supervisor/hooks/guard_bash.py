@@ -21,10 +21,7 @@ Claude Code Hook (PreToolUse) для инструмента Bash.
 
 import json
 import logging
-import os
-import re
 import sys
-from pathlib import Path
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -36,28 +33,74 @@ logger = logging.getLogger("guard_bash")
 # ── Allowlist читающих команд ─────────────────────────────────────────────────
 
 ALLOWED_PROGRAMS = {
-    "pwd", "ls", "find", "cat", "head", "tail",
-    "grep", "rg", "wc", "echo", "stat", "file",
+    "pwd",
+    "ls",
+    "find",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "rg",
+    "wc",
+    "echo",
+    "stat",
+    "file",
     "git",
 }
 
 # Для git — разрешены только read-only subcommands
 ALLOWED_GIT_SUBCOMMANDS = {
-    "status", "diff", "log", "show", "ls-files",
-    "branch", "rev-parse", "cat-file", "describe",
+    "status",
+    "diff",
+    "log",
+    "show",
+    "ls-files",
+    "branch",
+    "rev-parse",
+    "cat-file",
+    "describe",
 }
 
 # ── Denylist программ ─────────────────────────────────────────────────────────
 
 BLOCKED_PROGRAMS = {
-    "git add", "git commit", "git push", "git reset",
-    "git checkout", "git merge", "git rebase", "git stash",
-    "pytest", "npm", "go", "make", "pip", "pip3",
-    "rm", "mv", "cp", "chmod", "chown",
-    "sudo", "curl", "wget", "ssh", "nc",
-    "python", "python3", "node", "ruby",
-    "touch", "mkdir", "mkfifo", "kill", "killall",
-    "systemctl", "service", "docker", "kubectl",
+    "git add",
+    "git commit",
+    "git push",
+    "git reset",
+    "git checkout",
+    "git merge",
+    "git rebase",
+    "git stash",
+    "pytest",
+    "npm",
+    "go",
+    "make",
+    "pip",
+    "pip3",
+    "rm",
+    "mv",
+    "cp",
+    "chmod",
+    "chown",
+    "sudo",
+    "curl",
+    "wget",
+    "ssh",
+    "nc",
+    "python",
+    "python3",
+    "node",
+    "ruby",
+    "touch",
+    "mkdir",
+    "mkfifo",
+    "kill",
+    "killall",
+    "systemctl",
+    "service",
+    "docker",
+    "kubectl",
 }
 
 # Shell операторы которые превращают read-only в write

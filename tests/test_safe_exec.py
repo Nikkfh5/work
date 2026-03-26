@@ -4,20 +4,20 @@ tests/test_safe_exec.py — тесты для supervisor/safe_exec.py
 Запуск: pytest tests/test_safe_exec.py -v
 """
 
-import os
 import sys
 import pytest
-from pathlib import Path
 from supervisor.safe_exec import safe_exec, SafeExecError, _check_cmd, _check_cwd
 
 
 # ── Вспомогательные утилиты ──────────────────────────────────────────────────
+
 
 def is_unix():
     return sys.platform != "win32"
 
 
 # ── Тесты _check_cmd ─────────────────────────────────────────────────────────
+
 
 def test_check_cmd_allowed_git_status():
     """git status — разрешена."""
@@ -89,7 +89,17 @@ def test_check_cmd_npm_run_disallowed_script():
 
 def test_check_cmd_git_allowed_subcommands():
     """Все разрешённые git subcommands."""
-    for sub in ["clone", "fetch", "add", "commit", "push", "diff", "log", "status", "gc"]:
+    for sub in [
+        "clone",
+        "fetch",
+        "add",
+        "commit",
+        "push",
+        "diff",
+        "log",
+        "status",
+        "gc",
+    ]:
         _check_cmd(["git", sub])  # не должно бросать
 
 
@@ -105,6 +115,7 @@ def test_check_cmd_empty_raises():
 
 
 # ── Тесты _check_cwd ─────────────────────────────────────────────────────────
+
 
 def test_check_cwd_within_allowed_root(tmp_path):
     """Директория внутри allowed_roots — разрешена."""
@@ -142,6 +153,7 @@ def test_check_cwd_symlink_escape_blocked(tmp_path):
 
 # ── Тесты safe_exec с реальными командами ────────────────────────────────────
 
+
 def test_safe_exec_blocked_rm(tmp_path):
     """safe_exec(['rm', '-rf', '/'], ...) → SafeExecError."""
     with pytest.raises(SafeExecError):
@@ -171,6 +183,7 @@ def test_safe_exec_cwd_check_works(tmp_path):
 def test_safe_exec_git_status_in_repo(tmp_path):
     """git status в git-репо — выполняется успешно."""
     import subprocess as sp
+
     sp.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
     stdout, stderr, code = safe_exec(
         ["git", "status"],
@@ -186,6 +199,7 @@ def test_safe_exec_no_secret_env_passed(tmp_path, monkeypatch):
     # Запускаем python чтобы проверить окружение (но python -m pytest не разрешён без context)
     # Просто проверяем что _build_safe_env не содержит секрет
     from supervisor.safe_exec import _build_safe_env
+
     env = _build_safe_env(None)
     assert "GIT_TOKEN_JOB1" not in env
     assert "ghp_secret_token" not in env.values()
@@ -194,6 +208,7 @@ def test_safe_exec_no_secret_env_passed(tmp_path, monkeypatch):
 def test_safe_exec_env_extra_secret_filtered(tmp_path, monkeypatch):
     """Секреты из env_extra тоже фильтруются."""
     from supervisor.safe_exec import _build_safe_env
+
     env = _build_safe_env({"MY_TOKEN": "secret123", "PATH": "/usr/bin"})
     assert "MY_TOKEN" not in env
     assert "secret123" not in env.values()

@@ -117,6 +117,22 @@ _Нет активных блокеров._
 - [ ] sequential thinking MCP, filesystem MCP, wcgw MCP
 - [ ] Декомпозиция main.py → отдельный `supervisor/worker_cycle.py`
 
+### Внешние референсы (посмотреть перед реализацией)
+
+**[claude-server-kit](https://github.com/doffskiii/claude-server-kit)** — VPS setup для Claude Code CLI (тоже Max, без API). Полезность 3/10, но есть точечные модули:
+
+- **Фаза 6 (Health):** `brain/scripts/monitor.py` — psutil мониторинг + TG алерты с cooldown. Посмотреть подход к health checks перед реализацией health_monitor.py
+- **Фаза 8 (GraphRAG):** `brain/src/brain/vault/embeddings.py` — ONNX sentence-transformers на CPU, инкрементальная индексация. Референс для semantic search без GPU
+- **repo_manager:** `brain/src/brain/vault/sync.py` — debounced git sync (батчинг записей в один коммит)
+
+**[Gas Town](https://github.com/steveyegge/gastown)** — multi-agent оркестрация от Steve Yegge (Go + Claude CLI). Анализ: `Gas_Town_example.txt`. Полезные идеи:
+
+- **Фаза 6 (Health):** Witness/Patrol паттерн — фоновый детектор зависших задач ("30 мин без обновления → эскалация"). Добавить `release_stale()` в lease_manager
+- **Checkpoint/Handoff** (новая фича): при переполнении контекста Claude Code — сохранять в БД что сделано + что осталось, новая сессия продолжает. Реализация: поле `partial_result` в tasks (migrate.py) + инжект в промпт воркера при retry
+- **DAG workflows (Molecules)** — многошаговые задачи с зависимостями (шаг 2 после шага 1). Пока не нужно, обсудить если появятся сложные многоэтапные ТЗ
+
+Доп. ссылки: [maggieappleton.com/gastown](https://maggieappleton.com/gastown), [paddo.dev/blog](https://paddo.dev/blog/gastown-two-kinds-of-multi-agent/)
+
 ### Future: Фаза 8 — GraphRAG Memory (единый Knowledge Graph)
 
 **Проблема:** воркеры stateless + нет базы знаний. Воркер не помнит прошлые задачи, а пользователь не может закинуть документы/статьи для контекста.

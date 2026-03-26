@@ -15,7 +15,6 @@ supervisor/lease_manager.py — атомарный захват задачи + s
 """
 
 import logging
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Callable, Optional
@@ -107,13 +106,17 @@ def acquire_lease(
     if acquired:
         logger.info(
             "lease_acquired task_id=%s worker=%s token=%s ttl=%d",
-            task_id, worker_id, token, ttl,
+            task_id,
+            worker_id,
+            token,
+            ttl,
         )
         return token
     else:
         logger.warning(
             "lease_conflict task_id=%s worker=%s",
-            task_id, worker_id,
+            task_id,
+            worker_id,
         )
         return None
 
@@ -158,7 +161,9 @@ def renew_lease(
     else:
         logger.warning(
             "lease_stale task_id=%s worker=%s token=%s",
-            task_id, worker_id, lease_token,
+            task_id,
+            worker_id,
+            lease_token,
         )
     return renewed
 
@@ -206,12 +211,16 @@ def release_lease(
     if released:
         logger.info(
             "lease_released task_id=%s worker=%s new_status=%s",
-            task_id, worker_id, new_status,
+            task_id,
+            worker_id,
+            new_status,
         )
     else:
         logger.warning(
             "lease_stale task_id=%s worker=%s token=%s — release ignored",
-            task_id, worker_id, lease_token,
+            task_id,
+            worker_id,
+            lease_token,
         )
     return released
 
@@ -269,6 +278,7 @@ def check_transition(current: str, target: str) -> bool:
 def _add_seconds(dt: datetime, seconds: int) -> str:
     """Вернуть ISO-строку времени dt + seconds секунд."""
     from datetime import timedelta
+
     result = dt + timedelta(seconds=seconds)
     # SQLite принимает без timezone info
     return result.strftime("%Y-%m-%d %H:%M:%S")

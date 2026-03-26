@@ -11,14 +11,13 @@ supervisor/stages/deliver.py — Stage: CI + push + TG notify.
 """
 
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from supervisor.lease_manager import release_lease
 from supervisor.pipeline import (
     E_GIT_PUSH_FAIL,
     WorkerContext,
     _fail_final,
-    _notify_failure,
 )
 from supervisor.safe_exec import safe_exec
 
@@ -32,6 +31,7 @@ async def _run_ci_and_push(
     worker_cfg: dict,
     repo_mgr,
     db_path: Optional[str] = None,
+    executor: Optional[Callable] = None,
 ) -> tuple[bool, str]:
     """
     Запустить style formatters, git commit, CI checks, git push.
@@ -39,6 +39,7 @@ async def _run_ci_and_push(
     Returns:
         (success, error_message)
     """
+    exec_fn = executor or safe_exec
     wt_path = str(repo_mgr._worktree_path(task_id, alias))
 
     # 1. Style policy — run formatters before commit
@@ -46,7 +47,7 @@ async def _run_ci_and_push(
     if style_policy.get("run_before_commit"):
         for fmt_cmd in style_policy.get("formatters", []):
             try:
-                _out, _err, rc = safe_exec(fmt_cmd, cwd=wt_path, timeout=120)
+                _out, _err, rc = exec_fn(fmt_cmd, cwd=wt_path, timeout=120)
                 if rc != 0:
                     logger.warning(
                         "_run_ci_and_push: formatter %s failed task_id=%s rc=%d",
@@ -63,8 +64,8 @@ async def _run_ci_and_push(
 
     # 2. Git add + commit
     try:
-        safe_exec(["git", "add", "."], cwd=wt_path, timeout=60)
-        _out, _err, rc = safe_exec(
+        exec_fn(["git", "add", "."], cwd=wt_path, timeout=60)
+        _out, _err, rc = exec_fn(
             ["git", "commit", "-m", f"ai: task {task_id[:8]} — auto-commit"],
             cwd=wt_path,
             timeout=60,
@@ -81,7 +82,7 @@ async def _run_ci_and_push(
     ci_required = ci_policy.get("required_pass", False)
     for ci_cmd in ci_policy.get("run_before_push", []):
         try:
-            _out, _err, rc = safe_exec(ci_cmd, cwd=wt_path, timeout=300)
+            _out, _err, rc = exec_fn(ci_cmd, cwd=wt_path, timeout=300)
             if rc != 0 and ci_required:
                 return False, f"CI failed ({ci_cmd[0]}): {_err[:200]}"
         except Exception as exc:
@@ -93,7 +94,7 @@ async def _run_ci_and_push(
 
     # 4. Git push
     try:
-        _out, _err, rc = safe_exec(
+        _out, _err, rc = exec_fn(
             ["git", "push", "origin", "HEAD"],
             cwd=wt_path,
             timeout=120,
@@ -132,6 +133,7 @@ async def deliver_stage(ctx: WorkerContext) -> None:
                 ctx.worker_cfg,
                 ctx.repo_manager,
                 ctx.db_path,
+                executor=ctx.executor,
             )
             if not success:
                 _fail_final(
@@ -141,28 +143,26 @@ async def deliver_stage(ctx: WorkerContext) -> None:
                     E_GIT_PUSH_FAIL,
                     ctx.db_path,
                 )
-                await _notify_failure(
-                    ctx.tg_handler, ctx.task_id, f"CI/push failed: {err}"
+                ctx.emit(
+                    "task_failed",
+                    reason="git_push_failed",
+                    message=f"CI/push failed: {err}",
                 )
                 return
 
     # Release lease done
     release_lease(ctx.task_id, ctx.worker_id, ctx.token, "done", db_path=ctx.db_path)
 
-    # TG notification
+    # Emit completion event
     if ctx.worker_status == "reviewed_approved":
         iteration = ctx.parsed.get("_review_iteration", "?")
         feedback = ctx.parsed.get("_review_feedback", "")
-        await ctx.tg_handler.notify_owner(
-            f"task#{ctx.task_id[:8]}: DONE (reviewer APPROVED, "
-            f"iter={iteration})\n{feedback[:200]}"
+        ctx.emit(
+            "review_approved",
+            message=f"DONE (reviewer APPROVED, iter={iteration})\n{feedback[:200]}",
         )
     else:
         notes = ctx.parsed.get("result", {}).get("notes", "")
-        confidence = ctx.confidence
-        await ctx.tg_handler.notify_owner(
-            f"task#{ctx.task_id[:8]}: DONE \u2713 (confidence={confidence})\n"
-            f"{notes[:200]}"
-        )
+        ctx.emit("task_done", confidence=ctx.confidence, notes=notes)
 
     logger.info("deliver_stage: done task_id=%s", ctx.task_id)

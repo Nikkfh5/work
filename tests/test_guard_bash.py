@@ -9,17 +9,19 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
 from supervisor.hooks.guard_bash import check_command
 
 
-GUARD_PATH = str(Path(__file__).parent.parent / "supervisor" / "hooks" / "guard_bash.py")
+GUARD_PATH = str(
+    Path(__file__).parent.parent / "supervisor" / "hooks" / "guard_bash.py"
+)
 
 
 # ── Тесты check_command ──────────────────────────────────────────────────────
 
 # Разрешённые команды (exit 0)
+
 
 def test_pwd_allowed():
     allowed, _ = check_command("pwd")
@@ -88,6 +90,7 @@ def test_git_show_allowed():
 
 # Заблокированные команды (exit 2)
 
+
 def test_git_push_blocked():
     allowed, reason = check_command("git push origin main")
     assert allowed is False
@@ -137,6 +140,7 @@ def test_python_blocked():
 
 # Shell операторы — блокируются
 
+
 def test_shell_and_operator_blocked():
     allowed, reason = check_command("ls workspace/ && git push")
     assert allowed is False
@@ -175,6 +179,7 @@ def test_shell_dollar_paren_blocked():
 
 # Edge cases
 
+
 def test_empty_command_blocked():
     allowed, _ = check_command("")
     assert allowed is False
@@ -195,6 +200,7 @@ def test_rg_allowed():
 
 
 # ── Интеграционные тесты через subprocess ────────────────────────────────────
+
 
 def run_hook(command: str) -> int:
     """Запустить guard_bash.py как subprocess, вернуть exit code."""

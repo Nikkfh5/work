@@ -68,9 +68,8 @@ async def prepare_stage(ctx: WorkerContext) -> None:
         LeaseConflict: lease уже занят
         WorktreeError: ошибка при создании worktree
     """
-    lease_ttl = int(os.getenv("WORKER_LEASE_TTL_SECONDS", "300"))
     token = acquire_lease(
-        ctx.task_id, ctx.worker_id, ttl=lease_ttl, db_path=ctx.db_path
+        ctx.task_id, ctx.worker_id, ttl=ctx.lease_ttl, db_path=ctx.db_path
     )
     if not token:
         raise LeaseConflict()

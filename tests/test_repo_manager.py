@@ -5,16 +5,17 @@ tests/test_repo_manager.py — тесты для supervisor/repo_manager.py
 Запуск: pytest tests/test_repo_manager.py -v
 """
 
-import os
-import shutil
 import subprocess
 import sys
-import time
 import pytest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-from supervisor.repo_manager import RepoManager, RepoManagerError, _inject_token, _build_clone_args
+from supervisor.repo_manager import (
+    RepoManager,
+    RepoManagerError,
+    _inject_token,
+    _build_clone_args,
+)
 
 
 def has_git() -> bool:
@@ -30,19 +31,33 @@ pytestmark = pytest.mark.skipif(not has_git(), reason="git not available")
 
 # ── Фикстуры ─────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def source_repo(tmp_path):
     """Создаём bare source репозиторий с одним коммитом."""
     repo = tmp_path / "source_repo"
     repo.mkdir()
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@test.com"],
-                   check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
     # Создаём файл и коммит
     (repo / "hello.txt").write_text("hello world")
-    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "."], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
     return repo
 
 
@@ -58,6 +73,7 @@ def manager(tmp_path):
 
 # ── Тесты _inject_token ──────────────────────────────────────────────────────
 
+
 def test_inject_token_https():
     url = "https://github.com/org/repo.git"
     result = _inject_token(url, "ghp_mytoken")
@@ -71,6 +87,7 @@ def test_inject_token_non_https_unchanged():
 
 
 # ── Тесты _build_clone_args ──────────────────────────────────────────────────
+
 
 def test_build_clone_args_mirror():
     args = _build_clone_args("https://host/repo.git", "/tmp/dest", "mirror")
@@ -95,10 +112,12 @@ def test_build_clone_args_sparse():
 
 # ── Тесты ensure_mirror ──────────────────────────────────────────────────────
 
+
 def test_ensure_mirror_creates_bare_repo(tmp_path, source_repo, manager):
     """ensure_mirror создаёт bare репозиторий."""
     mirror_path = manager.ensure_mirror(
-        job="job1", alias="api",
+        job="job1",
+        alias="api",
         git_url=str(source_repo),
         clone_strategy="mirror",
     )
@@ -117,6 +136,7 @@ def test_ensure_mirror_idempotent(tmp_path, source_repo, manager):
 
 
 # ── Тесты prepare_worktree ───────────────────────────────────────────────────
+
 
 def test_prepare_worktree_creates_directory(tmp_path, source_repo, manager):
     """prepare_worktree создаёт рабочую директорию."""
@@ -150,6 +170,7 @@ def test_prepare_worktree_requires_mirror(tmp_path, manager):
 
 # ── Тесты cleanup_worktree ───────────────────────────────────────────────────
 
+
 def test_cleanup_worktree_removes_directory(tmp_path, source_repo, manager):
     """cleanup_worktree удаляет директорию worktree."""
     manager.ensure_mirror(job="job1", alias="api", git_url=str(source_repo))
@@ -172,6 +193,7 @@ def test_cleanup_worktree_removes_symlink(tmp_path, source_repo, manager):
 
 
 # ── Тесты cleanup_old_worktrees ──────────────────────────────────────────────
+
 
 def test_cleanup_old_worktrees_removes_old(tmp_path, manager):
     """cleanup_old_worktrees удаляет директории старше N дней."""

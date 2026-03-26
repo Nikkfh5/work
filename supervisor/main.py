@@ -229,6 +229,7 @@ async def run_worker_cycle(
         branch_pattern=branching.get("pattern", "ai/task-{task_id}"),
         base_branch=branching.get("base", "main"),
         repo_manager=repo_manager or RepoManager(),
+        lease_ttl=int(os.getenv("WORKER_LEASE_TTL_SECONDS", "300")),
         max_attempts=int(worker_cfg.get("max_attempts", 3)),
         worker_timeout=int(os.getenv("WORKER_TIMEOUT_SECONDS", "1800")),
         retry_delay=int(os.getenv("WORKER_RETRY_DELAY_SECONDS", "30")),

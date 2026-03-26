@@ -1,43 +1,16 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gh auth status:*)",
-      "Bash(git --version:*)",
-      "Bash(where:*)",
-      "Bash(git init:*)",
-      "Bash(git remote add:*)",
-      "Bash(git branch:*)",
-      "Bash(dir:*)",
-      "Bash(git config:*)",
-      "Bash(git commit:*)",
+      "Bash",
       "WebSearch",
-      "WebFetch(domain:docs.claude.com)",
-      "WebFetch(domain:www.anthropic.com)",
-      "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:github.com)",
-      "WebFetch(domain:api.github.com)",
-      "Bash(cmd /c echo test)",
-      "Bash(cmd /c:*)",
-      "Bash(powershell -Command \"Write-Output ''test''\")",
-      "Bash(powershell -Command:*)",
-      "Bash(\"C:/Users/v-353/OneDrive/Рабочий стол/N/hse/work/workers/python_1/CLAUDE.md\":*)",
-      "Bash(\"C:/Users/v-353/OneDrive/Рабочий стол/N/hse/work/CLAUDE.md\":*)",
-      "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\v-353\\\\OneDrive\\\\Рабочий стол\\\\N\\\\hse\\\\work\\\\''\")",
-      "Bash(printf '# Python Dev #2 — Worker Agent\\\\n\\\\n## Твоя роль\\\\nТы Python-разработчик \\(#2\\), специализируешься на data science и ML.\\\\nКлиент пишет через Telegram \\(@python_dev_2\\) или email \\(python2@company.com\\).\\\\n\\\\n## Правила работы\\\\n- Весь код пишешь в папку workspace/\\\\n- После выполнения: git add, git commit, git push\\\\n- Если задание непонятно — пиши в worker_question.txt: \"\"ВОПРОС: ...\"\"\\\\n- Если готово — пиши в worker_result.txt: результат + ссылка на коммит\\\\n- Если заблокирован — пиши в worker_result.txt: \"\"BLOCKED: причина\"\"\\\\n\\\\n## Стек\\\\n- Python 3.11+, numpy, pandas, scikit-learn, PyTorch\\\\n- Jupyter notebooks если нужна визуализация\\\\n- Пиши воспроизводимый код с фиксированными seed\\\\n\\\\n## Git\\\\n- Коммить в репо указанный в task.json → git_repo\\\\n\\\\n## Контекст\\\\nЧитай context_log.md перед началом работы.\\\\n')",
-      "Bash(powershell.exe -Command \"Get-Content ''C:\\\\Users\\\\v-353\\\\OneDrive\\\\Рабочий стол\\\\N\\\\hse\\\\work\\\\CLAUDE.md'' | Select-Object -First 5\")",
-      "Bash(printf '# C++ Dev #1 — Worker Agent\\\\n\\\\n## Твоя роль\\\\nТы C++ разработчик \\(#1\\).\\\\nКлиент пишет через Telegram \\(@cpp_dev_1\\) или email \\(cpp1@company.com\\).\\\\n\\\\n## Правила работы\\\\n- Весь код пишешь в папку workspace/\\\\n- После выполнения: git add, git commit, git push\\\\n- Если задание непонятно — пиши в worker_question.txt: \"\"ВОПРОС: ...\"\"\\\\n- Если готово — пиши в worker_result.txt: результат + ссылка на коммит\\\\n- Если заблокирован — пиши в worker_result.txt: \"\"BLOCKED: причина\"\"\\\\n\\\\n## Стек\\\\n- C++17/20, CMake для сборки\\\\n- Следи за memory safety, избегай UB\\\\n- Используй RAII, умные указатели\\\\n\\\\n## Git\\\\n- Репо указан в task.json → git_repo\\\\n\\\\n## Контекст\\\\nЧитай context_log.md перед началом работы.\\\\n')",
-      "Bash(powershell.exe -Command \"\\(Get-Content ''C:\\\\Users\\\\v-353\\\\OneDrive\\\\Рабочий стол\\\\N\\\\hse\\\\work\\\\CLAUDE.md'' -Encoding UTF8 | Measure-Object -Line\\).Lines\")",
-      "Bash(py:*)",
-      "WebFetch(domain:openclaw.ai)",
-      "WebFetch(domain:steve-yegge.medium.com)",
-      "WebFetch(domain:docs.gastownhall.ai)",
-      "WebFetch(domain:paddo.dev)",
-      "WebFetch(domain:medium.com)",
-      "WebFetch(domain:www.dolthub.com)",
-      "WebFetch(domain:dustinsmith.info)",
-      "WebFetch(domain:gist.githubusercontent.com)",
-      "WebFetch(domain:maggieappleton.com)",
-      "WebFetch(domain:devcenter.upsun.com)"
+      "WebFetch",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_snapshot"
+    ],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(rm -r /:*)",
+      "Bash(rmdir /s:*)"
     ]
   }
 }

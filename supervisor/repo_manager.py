@@ -35,6 +35,7 @@ DEFAULT_WORKERS_DIR = "workers"
 
 class RepoManagerError(Exception):
     """Ошибка при работе с репозиторием."""
+
     pass
 
 
@@ -91,7 +92,9 @@ class RepoManager:
         # Последний fallback — master
         return "master"
 
-    def _run_git(self, args: list[str], cwd: Optional[str] = None, env: Optional[dict] = None) -> subprocess.CompletedProcess:
+    def _run_git(
+        self, args: list[str], cwd: Optional[str] = None, env: Optional[dict] = None
+    ) -> subprocess.CompletedProcess:
         """Запустить git команду. Никогда shell=True."""
         cmd = ["git"] + args
         logger.debug("git %s (cwd=%s)", " ".join(args), cwd)
@@ -105,7 +108,9 @@ class RepoManager:
         if result.returncode != 0:
             logger.warning(
                 "git %s failed (code %d): %s",
-                args[0], result.returncode, result.stderr[:500],
+                args[0],
+                result.returncode,
+                result.stderr[:500],
             )
         return result
 
@@ -149,7 +154,9 @@ class RepoManager:
         else:
             # Клонируем
             mirror.parent.mkdir(parents=True, exist_ok=True)
-            logger.info("ensure_mirror: cloning %s/%s strategy=%s", job, alias, clone_strategy)
+            logger.info(
+                "ensure_mirror: cloning %s/%s strategy=%s", job, alias, clone_strategy
+            )
 
             clone_args = _build_clone_args(auth_url, str(mirror), clone_strategy)
             result = self._run_git(clone_args)
@@ -232,17 +239,25 @@ class RepoManager:
             if sys.platform == "win32":
                 # Windows: используем junction для директорий
                 import subprocess as sp
+
                 sp.run(
                     ["cmd", "/c", "mklink", "/J", str(symlink), str(target)],
-                    check=True, capture_output=True,
+                    check=True,
+                    capture_output=True,
                 )
             else:
                 symlink.symlink_to(target)
         except Exception as exc:
-            logger.warning("prepare_worktree: failed to create symlink %s → %s: %s",
-                           symlink, target, exc)
+            logger.warning(
+                "prepare_worktree: failed to create symlink %s → %s: %s",
+                symlink,
+                target,
+                exc,
+            )
 
-        logger.info("prepare_worktree: task_id=%s alias=%s branch=%s", task_id, alias, branch)
+        logger.info(
+            "prepare_worktree: task_id=%s alias=%s branch=%s", task_id, alias, branch
+        )
         return wt_path
 
     def cleanup_worktree(self, task_id: str, job: str, alias: str) -> None:
@@ -264,7 +279,9 @@ class RepoManager:
                     symlink.unlink()
                 logger.debug("cleanup_worktree: removed symlink %s", symlink)
             except OSError as exc:
-                logger.warning("cleanup_worktree: failed to remove symlink %s: %s", symlink, exc)
+                logger.warning(
+                    "cleanup_worktree: failed to remove symlink %s: %s", symlink, exc
+                )
 
         # 2. Удаляем worktree из git
         mirror = self._mirror_path(job, alias)
@@ -276,7 +293,10 @@ class RepoManager:
                 cwd=str(mirror),
             )
             if result.returncode != 0:
-                logger.warning("cleanup_worktree: git worktree remove failed: %s", result.stderr[:200])
+                logger.warning(
+                    "cleanup_worktree: git worktree remove failed: %s",
+                    result.stderr[:200],
+                )
 
         # 3. Удаляем директорию worktrees/{task_id}/ если пуста
         task_dir = self.worktrees / task_id
@@ -310,13 +330,19 @@ class RepoManager:
             if not task_dir.is_dir():
                 continue
             try:
-                mtime = datetime.fromtimestamp(task_dir.stat().st_mtime, tz=timezone.utc)
+                mtime = datetime.fromtimestamp(
+                    task_dir.stat().st_mtime, tz=timezone.utc
+                )
                 if mtime < cutoff:
                     shutil.rmtree(task_dir)
-                    logger.info("cleanup_old_worktrees: removed %s (mtime=%s)", task_dir, mtime)
+                    logger.info(
+                        "cleanup_old_worktrees: removed %s (mtime=%s)", task_dir, mtime
+                    )
                     removed += 1
             except OSError as exc:
-                logger.warning("cleanup_old_worktrees: error processing %s: %s", task_dir, exc)
+                logger.warning(
+                    "cleanup_old_worktrees: error processing %s: %s", task_dir, exc
+                )
 
         logger.info("cleanup_old_worktrees: removed %d old worktree(s)", removed)
         return removed
@@ -324,10 +350,11 @@ class RepoManager:
 
 # ── Вспомогательные функции ──────────────────────────────────────────────────
 
+
 def _inject_token(url: str, token: str) -> str:
     """Встроить токен в HTTPS URL: https://token@host/path."""
     if url.startswith("https://"):
-        return f"https://{token}@{url[len('https://'):]}"
+        return f"https://{token}@{url[len('https://') :]}"
     return url
 
 

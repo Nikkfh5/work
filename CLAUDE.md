@@ -115,10 +115,12 @@ plans/progress.md            трекер прогресса + backlog рефа�
 
 - [ ] Модуль реализован полностью по контракту
 - [ ] Unit-тесты: happy path + ошибка + 1–2 edge cases
+- [ ] Property-based тесты для parse/validate/normalize (если применимо, см. скилл `property-based-testing`)
 - [ ] Нет изменений запрещённых файлов
 - [ ] Нет `shell=True`
 - [ ] Все ошибки логируются через `logger.warning/error` с context (task_id, phase)
 - [ ] `pytest tests/ -v` — всё зелёное включая старые тесты
+- [ ] `semgrep --metrics=off --config .semgrep/rules/ .` — 0 находок (проверка инвариантов)
 
 ---
 
@@ -175,10 +177,120 @@ logger.error("lease_conflict task_id=%s worker=%s", task_id, worker_id)
 
 Запускать после каждого модуля:
 ```bash
-pytest tests/ -v        # 229 тестов, все зелёные
+pytest tests/ -v        # 247 тестов, все зелёные
 ruff check .            # линтинг
 ruff format --check .   # форматирование
+semgrep --metrics=off --config .semgrep/rules/ .  # проверка инвариантов
 ```
+
+---
+
+## Скиллы (`.claude/skills/`) — автоматические триггеры
+
+Скиллы загружаются из `.claude/skills/*/SKILL.md`. Модель ОБЯЗАНА применять их проактивно по триггерам ниже — НЕ ждать, пока пользователь попросит.
+
+### 1. property-based-testing (ПРОАКТИВНЫЙ — запускать самому)
+
+**Триггер:** при написании или ревью тестов для модулей, которые содержат:
+- Парсинг/сериализация: `extract_json`, `json.loads`/`json.dumps`, encode/decode
+- Валидация: `validate_*`, `is_valid`, `check_*`
+- Нормализация: `redact()`, `sanitize`, `normalize`, `clean`
+- State machine: `acquire_lease`, `release_lease`, `set_state`
+- Файловые пути: `realpath`, `safe_exec`, path validation
+
+**Действие:** прочитать `.claude/skills/property-based-testing/SKILL.md`, затем:
+1. Предложить PBT тесты с конкретными properties (roundtrip, idempotence, invariant)
+2. Использовать project-specific strategies из `references/strategies.md`
+3. Добавить `@given(...)` тесты рядом с обычными unit-тестами
+
+**Пример автоматической реакции:**
+> "Вижу, что `extract_json` парсит произвольный stdout. Добавлю property-based тесты: roundtrip для валидного JSON и no-crash для произвольных строк."
+
+### 2. static-analysis (ПОСЛЕ КАЖДОГО МОДУЛЯ)
+
+**Триггер:** после завершения реализации любого модуля, ПЕРЕД коммитом.
+
+**Действие:** запустить:
+```bash
+semgrep --metrics=off --config .semgrep/rules/ .
+```
+
+Если есть находки — исправить до коммита. Это проверка наших инвариантов.
+
+Для полного security-аудита (по запросу или перед деплоем):
+```bash
+semgrep --metrics=off --config p/python --config p/security-audit --severity HIGH --severity CRITICAL .
+```
+
+### 3. security-threat-model (ПО ЗАПРОСУ + ПЕРЕД ДЕПЛОЕМ)
+
+**Триггер:** пользователь просит threat model, security review, или перед Фазой 7 (Docker deploy).
+
+**Действие:** прочитать `.claude/skills/security-threat-model/SKILL.md` и `references/prompt-template.md`, провести полный анализ.
+
+### 4. semgrep-rule-creator (ПРИ НОВОМ ИНВАРИАНТЕ)
+
+**Триггер:** когда добавляется новый инвариант или нужно создать кастомное Semgrep правило.
+
+**Действие:** следовать test-first workflow из `.claude/skills/semgrep-rule-creator/SKILL.md`.
+
+### 5. gh-fix-ci (ПРИ ПАДЕНИИ CI)
+
+**Триггер:** CI упал, тесты не прошли в GitHub Actions, пользователь спрашивает про failed checks.
+
+**Действие:** запустить скрипт:
+```bash
+python .claude/skills/gh-fix-ci/scripts/inspect_pr_checks.py --repo "." --pr "<number>"
+```
+Затем следовать workflow из SKILL.md.
+
+### 6. systematic-debugging (ПРИ ЛЮБОМ БАГЕ — ПРОАКТИВНЫЙ)
+
+**Триггер:** любой из этих сигналов:
+- Тест упал (pytest failure, assertion error)
+- Код крашится (exception, traceback)
+- Неожиданное поведение ("должно X, получается Y")
+- Пользователь: "сломалось", "не работает", "баг", "почему"
+- 2+ неудачных попытки починить что-то
+
+**НЕ триггерится:** при написании нового кода, рефакторинге, ревью, планировании.
+
+**Граница с gh-fix-ci:** gh-fix-ci = CI в GitHub Actions. systematic-debugging = любые баги локально.
+
+**Действие:** прочитать `.claude/skills/systematic-debugging/SKILL.md`, выполнить 4 фазы строго последовательно:
+1. Root Cause Investigation (ОБЯЗАТЕЛЬНА перед любым фиксом)
+2. Pattern Analysis
+3. Hypothesis + Testing (один фикс за раз)
+4. Implementation (failing test → fix → verify)
+
+**Iron Law:** НИКАКИХ ФИКСОВ БЕЗ ИССЛЕДОВАНИЯ. Если не прошёл Фазу 1 — нельзя предлагать решения.
+
+### 7. subagent-prompts (ТОЛЬКО В РЕЖИМЕ ДИРИЖЁРА)
+
+**Триггер:** работа в режиме conductor.md (шаги 3, 4, 5, 7).
+
+**НЕ триггерится:** при одиночных задачах вне conductor mode.
+
+**Действие:** прочитать `.claude/skills/subagent-prompts/SKILL.md` и использовать шаблоны:
+- Шаг 4 (BUILD): implementer-prompt
+- Шаг 3,5 (CRITIC): spec-reviewer-prompt (1-й проход) → code-quality-reviewer-prompt (2-й проход)
+- Шаг 7 (CHECK): code-quality-reviewer-prompt (на diff)
+
+**Двухэтапное ревью:** spec compliance СНАЧАЛА, code quality ПОТОМ. Quality review не начинается до прохождения spec review.
+
+### Кастомные Semgrep правила (`.semgrep/rules/`)
+
+Автоматическая проверка инвариантов проекта. Запускать после каждого модуля:
+
+| Правило | Инвариант | Severity |
+|---------|-----------|----------|
+| `no-shell-true` | #5: никогда shell=True | CRITICAL |
+| `no-raw-stdout-in-logs` | #6: логи только через redact() | HIGH |
+| `no-direct-subprocess-in-workers` | #4, #9: воркеры не запускают команды | HIGH |
+| `no-direct-client-write` | #10: только supervisor пишет клиенту | HIGH |
+| `no-schema-changes-outside-migrate` | #8: схема только через migrate.py | CRITICAL |
+| `no-log-content-in-db` | #7: в DB только пути к логам | HIGH |
+| `no-logic-in-db` | #1: db.py без бизнес-логики | MEDIUM |
 
 ---
 
