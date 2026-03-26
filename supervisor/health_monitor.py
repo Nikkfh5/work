@@ -109,22 +109,15 @@ async def build_snapshot(
     )
     lines.append("")
 
-    # ── Task statistics ──
-    lines.append("## Task Statistics")
+    # ── All DB queries in single connection (snapshot consistency) ──
+    worker_timeout = int(os.getenv("WORKER_TIMEOUT_SECONDS", "1800"))
+    stale_threshold_seconds = worker_timeout // 2
+
     with get_conn(db_path) as conn:
         rows = conn.execute(
             "SELECT status, COUNT(*) AS cnt FROM tasks GROUP BY status"
         ).fetchall()
-    if rows:
-        for row in rows:
-            lines.append(f"  {row['status']}: {row['cnt']}")
-    else:
-        lines.append("  (no tasks)")
-    lines.append("")
 
-    # ── Errors in last 24h ──
-    lines.append("## Errors (last 24h)")
-    with get_conn(db_path) as conn:
         error_rows = conn.execute(
             """
             SELECT last_error_reason, COUNT(*) AS cnt
@@ -135,6 +128,36 @@ async def build_snapshot(
             ORDER BY cnt DESC
             """
         ).fetchall()
+
+        manual_rows = conn.execute(
+            """
+            SELECT id, description, last_error_reason
+            FROM tasks
+            WHERE status = 'requires_manual'
+            """
+        ).fetchall()
+
+        stale_rows = conn.execute(
+            """
+            SELECT id, assigned_worker, locked_by, locked_until, updated_at
+            FROM tasks
+            WHERE status = 'running'
+              AND updated_at <= datetime('now', ? || ' seconds')
+            """,
+            (f"-{stale_threshold_seconds}",),
+        ).fetchall()
+
+    # ── Task statistics ──
+    lines.append("## Task Statistics")
+    if rows:
+        for row in rows:
+            lines.append(f"  {row['status']}: {row['cnt']}")
+    else:
+        lines.append("  (no tasks)")
+    lines.append("")
+
+    # ── Errors in last 24h ──
+    lines.append("## Errors (last 24h)")
     if error_rows:
         for row in error_rows:
             lines.append(f"  {row['last_error_reason']}: {row['cnt']}")
@@ -144,14 +167,6 @@ async def build_snapshot(
 
     # ── Tasks requiring manual intervention ──
     lines.append("## Tasks Requiring Manual Intervention")
-    with get_conn(db_path) as conn:
-        manual_rows = conn.execute(
-            """
-            SELECT id, description, last_error_reason
-            FROM tasks
-            WHERE status = 'requires_manual'
-            """
-        ).fetchall()
     if manual_rows:
         for row in manual_rows:
             desc_short = (row["description"] or "")[:80]
@@ -164,17 +179,6 @@ async def build_snapshot(
 
     # ── Stale leases ──
     lines.append("## Potentially Stale Leases")
-    worker_timeout = int(os.getenv("WORKER_TIMEOUT_SECONDS", "1800"))
-    stale_threshold_seconds = worker_timeout // 2
-    with get_conn(db_path) as conn:
-        stale_rows = conn.execute(
-            f"""
-            SELECT id, assigned_worker, locked_by, locked_until, updated_at
-            FROM tasks
-            WHERE status = 'running'
-              AND updated_at <= datetime('now', '-{stale_threshold_seconds} seconds')
-            """
-        ).fetchall()
     if stale_rows:
         for row in stale_rows:
             lines.append(

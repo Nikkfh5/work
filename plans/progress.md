@@ -5,7 +5,7 @@
 | Параметр | Значение |
 |----------|----------|
 | Активная фаза | 2 |
-| Тесты (всего) | 247 |
+| Тесты (всего) | 290 |
 | Тесты (статус) | ✅ все зелёные |
 | Последнее обновление | 2026-03-21 |
 
@@ -51,22 +51,21 @@
 - [x] CRUD escalations — create/resolve/get_open_escalation + route_owner_reply
 - [x] `tests/test_escalation.py` — 8 тестов (reasoning, auto-resolve, escalate, CRUD, routing)
 
-## Фаза 5 — Summarizer (daily digest) ⏳ В ОЧЕРЕДИ
+## Фаза 5 — Summarizer (daily digest) ✅ ЗАВЕРШЕНА
 
-~~Notion убран~~ → заменяется GraphRAG (Фаза 8) для контекста supervisor'а.
+- [x] `supervisor/summarizer.py` — build_daily_summary + run_daily_summary (6 тестов)
+- [x] Условие: отправлять ТОЛЬКО если за день были задачи ✅
+- [x] Подключён в main.py → schedule_at(daily_hour, lambda: run_daily_summary(tg, db_path))
+- [x] `tests/test_summarizer.py` — 6 тестов (no tasks→skip, done, blocked, errors, TG send, TG skip)
 
-- [ ] `supervisor/summarizer.py` — daily digest: сбор статистики за день + отправка в TG
-- [ ] Условие: отправлять ТОЛЬКО если за день были задачи (не спамить пустым дайджестом)
-- [ ] Подключить в main.py → schedule_at(daily_summary_hour_utc)
-- [ ] `tests/test_summarizer.py`
+## Фаза 6 — Health Monitor ✅ ЗАВЕРШЕНА
 
-## Фаза 6 — Health Monitor ⏳ В ОЧЕРЕДИ
-
-- [ ] `supervisor/health_monitor.py` — build_snapshot + run_health_check + run_health_task
-- [ ] `workers/health_monitor/CLAUDE.md` — шаблон для health агента
-- [ ] Scheduler в main.py (health_check_hour_utc)
-- [ ] auto_actions через safe_exec
-- [ ] `tests/test_health_monitor.py`
+- [x] `supervisor/health_monitor.py` — build_snapshot + run_health_check + auto_actions (18 тестов)
+- [x] `workers/health_monitor/CLAUDE.md` + .mcp.json + .claude/settings.json
+- [x] Scheduler в main.py (schedule_periodic → run_health_check)
+- [x] auto_actions: cleanup_worktrees, release_stale_leases, rotate_logs (allowlist)
+- [x] create_tasks → pending_approval в DB
+- [x] `tests/test_health_monitor.py` — 18 тестов (snapshot, GREEN/RED, auto_actions, create_tasks, invalid JSON)
 
 ## Фаза 7 — Docker + VPS deploy ⏳ В ОЧЕРЕДИ
 
