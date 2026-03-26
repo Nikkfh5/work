@@ -73,7 +73,7 @@ plans/progress.md            трекер прогресса + backlog рефа�
 | 4 Escalation | ✅ Done | escalation.py (supervisor_reasoning, pending_approval) |
 | 5 Summarizer | ⏳ Next | daily digest в TG (только если были задачи). Notion убран → GraphRAG |
 | 6 Health | ⏳ | health_monitor.py, scheduler |
-| 7 Docker | ⏳ | docker-compose, Dockerfile, Makefile |
+| 7 Deploy | ⏳ | systemd service, deploy.sh, Makefile (без Docker) |
 | 8 GraphRAG | 💡 Future | entities, relations, chunks + knowledge_worker (заменяет Notion) |
 
 Детали: `plans/progress.md`. Backlog рефакторинга там же.

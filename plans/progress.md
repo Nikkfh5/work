@@ -67,12 +67,14 @@
 - [x] create_tasks → pending_approval в DB
 - [x] `tests/test_health_monitor.py` — 18 тестов (snapshot, GREEN/RED, auto_actions, create_tasks, invalid JSON)
 
-## Фаза 7 — Docker + VPS deploy ⏳ В ОЧЕРЕДИ
+## Фаза 7 — VPS deploy (без Docker) ⏳ В ОЧЕРЕДИ
 
-- [ ] `docker-compose.yml` с HEALTHCHECK
-- [ ] `Dockerfile` (Python + claude CLI + user 1000)
-- [ ] `Makefile` (setup-mcp, test, run, logs, deploy)
-- [ ] Деплой + верификация
+~~Docker убран~~ — overhead без пользы для personal project на одном VPS.
+
+- [x] `deploy/supervisor.service` — systemd unit (auto-restart, EnvironmentFile, SIGTERM)
+- [x] `deploy/deploy.sh` — rsync + venv + pip + systemctl restart
+- [x] `Makefile` — test, lint, run, logs, deploy, status, setup-mcp
+- [ ] Деплой + верификация на VPS (когда будет готов)
 
 ---
 

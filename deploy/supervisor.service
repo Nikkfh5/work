@@ -1,0 +1,24 @@
+[Unit]
+Description=AI Orchestration Supervisor
+After=network.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/home/deploy/work
+ExecStart=/home/deploy/work/venv/bin/python -m supervisor.main
+Restart=always
+RestartSec=10
+EnvironmentFile=/home/deploy/work/.env
+
+# Graceful shutdown
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ai-supervisor
+
+[Install]
+WantedBy=multi-user.target
