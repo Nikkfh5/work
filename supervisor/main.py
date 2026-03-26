@@ -327,12 +327,9 @@ async def nightly_housekeeping(db_path: Optional[str] = None) -> None:
     logger.info("nightly_housekeeping: removed %d old worktree(s)", removed)
 
 
-# ── Stubs (Фаза 2) ────────────────────────────────────────────────────────────
+# ── Imports (phase implementations) ───────────────────────────────────────────
 
-
-async def run_daily_summary(tg_handler: TelegramHandler) -> None:
-    """Ежедневный дайджест — stub, реализуется в Фазе 2."""
-    logger.info("run_daily_summary: stub — Phase 2")
+from supervisor.summarizer import run_daily_summary  # noqa: E402
 
 
 async def run_health_check(
@@ -457,7 +454,7 @@ async def main() -> None:
             name="dispatcher",
         ),
         asyncio.create_task(
-            schedule_at(daily_hour, lambda: run_daily_summary(tg_handler)),
+            schedule_at(daily_hour, lambda: run_daily_summary(tg_handler, db_path)),
             name="daily_summary",
         ),
         asyncio.create_task(
