@@ -10,6 +10,7 @@ worktrees для каждого repo из конфигурации воркер�
 - Мутирует ctx: token, worktree_aliases, repos_context, branch
 """
 
+import asyncio
 import logging
 import os
 
@@ -77,7 +78,11 @@ async def prepare_stage(ctx: WorkerContext) -> None:
 
     if ctx.repos:
         try:
-            ctx.worktree_aliases = _setup_worktrees(
+            # Run git operations in executor to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            ctx.worktree_aliases = await loop.run_in_executor(
+                None,
+                _setup_worktrees,
                 ctx.task_id,
                 ctx.job,
                 ctx.repos,

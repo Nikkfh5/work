@@ -131,15 +131,40 @@ class SafeExecError(Exception):
     pass
 
 
+_BLOCKED_ENV_PATTERNS = (
+    "TOKEN", "SECRET", "PASSWORD", "KEY", "CREDENTIAL",
+    "AWS_", "AZURE_", "GCP_",
+)
+
+# Env vars that must NEVER be passed (injection/leak vectors)
+_DENYLIST_ENV_KEYS = {
+    "LD_PRELOAD", "LD_LIBRARY_PATH",
+    "HISTFILE", "HISTFILESIZE",
+    "DATABASE_URL", "REDIS_URL", "MONGO_URL",
+    "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+    "TELEGRAM_BOT_TOKEN", "NOTION_TOKEN",
+}
+
+
 def _build_safe_env(env_extra: Optional[dict] = None) -> dict:
-    """Построить минимальный безопасный env."""
+    """
+    Построить минимальный безопасный env.
+
+    Strict whitelist: передаём ТОЛЬКО ключи из SAFE_ENV_KEYS.
+    Denylist как второй слой: блокируем injection vectors.
+    """
+    # Layer 1: strict whitelist from os.environ
     safe = {k: v for k, v in os.environ.items() if k in SAFE_ENV_KEYS}
+
     if env_extra:
-        # Не пропускать секреты из env_extra
         for key, val in env_extra.items():
-            # Блокируем токены Git/TG/Notion прямо в env
-            if any(pat in key for pat in ("TOKEN", "SECRET", "PASSWORD", "KEY")):
-                # Git токены разрешены только через URL, не через env
+            # Layer 2: denylist — known dangerous env vars
+            if key in _DENYLIST_ENV_KEYS:
+                logger.warning("safe_exec: blocked denylist env var %s", key)
+                continue
+            # Layer 3: pattern-based secret detection
+            key_upper = key.upper()
+            if any(pat in key_upper for pat in _BLOCKED_ENV_PATTERNS):
                 logger.warning("safe_exec: blocked secret env var %s", key)
                 continue
             safe[key] = val

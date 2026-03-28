@@ -24,8 +24,7 @@ logger = logging.getLogger(__name__)
 JSON_START_MARKER = "<<<JSON>>>"
 JSON_END_MARKER = "<<<END>>>"
 
-# Regex для fallback: первый JSON-объект верхнего уровня
-_FALLBACK_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
+# No single regex — use brace-counting extractor instead
 
 # Допустимые значения полей
 VALID_WORKER_STATUSES = {"done", "blocked", "error"}
@@ -65,15 +64,81 @@ def extract_json(raw: str) -> Optional[dict]:
             return parsed
         logger.warning("extract_json: found markers but JSON invalid, trying fallback")
 
-    # Шаг 2: fallback — regex первого JSON-блока
-    match = _FALLBACK_JSON_RE.search(raw)
-    if match:
-        parsed = _try_parse(match.group(0), source="regex_fallback")
+    # Шаг 2: fallback — extract ALL JSON candidates via brace counting,
+    # then prefer the one that matches an agent schema
+    candidates = _extract_json_candidates(raw)
+    first_valid = None
+    for i, candidate in enumerate(candidates):
+        parsed = _try_parse(candidate, source=f"fallback[{i}]")
         if parsed is not None:
-            return parsed
+            if _looks_like_agent_json(parsed):
+                return parsed
+            if first_valid is None:
+                first_valid = parsed
+
+    if first_valid is not None:
+        return first_valid
 
     logger.warning("extract_json: no valid JSON found in output (%d chars)", len(raw))
     return None
+
+
+def _looks_like_agent_json(obj: dict) -> bool:
+    """Check if parsed dict looks like a worker/reviewer/health response."""
+    # Worker: has "status" field
+    if "status" in obj and obj.get("status") in VALID_WORKER_STATUSES:
+        return True
+    # Reviewer: has "verdict" field
+    if "verdict" in obj and obj.get("verdict") in VALID_REVIEWER_VERDICTS:
+        return True
+    # Health: has "health" dict with "overall"
+    if isinstance(obj.get("health"), dict):
+        return True
+    return False
+
+
+def _extract_json_candidates(raw: str) -> list[str]:
+    """
+    Extract all top-level JSON object candidates via brace counting.
+
+    Handles arbitrary nesting depth (unlike regex).
+    Returns list of candidate strings, ordered by position in raw.
+    """
+    candidates = []
+    i = 0
+    while i < len(raw):
+        if raw[i] == "{":
+            depth = 0
+            start = i
+            in_string = False
+            escape_next = False
+            for j in range(i, len(raw)):
+                ch = raw[j]
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == "\\":
+                    escape_next = True
+                    continue
+                if ch == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidates.append(raw[start : j + 1])
+                        i = j + 1
+                        break
+            else:
+                # Unbalanced braces — skip this {
+                i += 1
+        else:
+            i += 1
+    return candidates
 
 
 def _try_parse(text: str, source: str) -> Optional[dict]:

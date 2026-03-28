@@ -16,6 +16,7 @@ supervisor/repo_manager.py — управление bare mirror репозито
 - cleanup_old_worktrees: удаляет worktrees старше N дней
 """
 
+import asyncio
 import logging
 import os
 import shutil
@@ -95,7 +96,7 @@ class RepoManager:
     def _run_git(
         self, args: list[str], cwd: Optional[str] = None, env: Optional[dict] = None
     ) -> subprocess.CompletedProcess:
-        """Запустить git команду. Никогда shell=True."""
+        """Запустить git команду синхронно. Никогда shell=True."""
         cmd = ["git"] + args
         logger.debug("git %s (cwd=%s)", " ".join(args), cwd)
         result = subprocess.run(
@@ -113,6 +114,15 @@ class RepoManager:
                 result.stderr[:500],
             )
         return result
+
+    async def _run_git_async(
+        self, args: list[str], cwd: Optional[str] = None, env: Optional[dict] = None
+    ) -> subprocess.CompletedProcess:
+        """Запустить git команду в executor (не блокирует event loop)."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._run_git, args, cwd, env
+        )
 
     def ensure_mirror(
         self,

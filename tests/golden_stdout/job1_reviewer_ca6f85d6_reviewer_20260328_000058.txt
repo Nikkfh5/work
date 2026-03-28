@@ -1,0 +1,38 @@
+Код прочитан. Проведу анализ.
+
+**validators.py** — 3 функции, только `re`, защита от не-string типов. Регулярки адекватные.
+
+**test_validators.py** — 180 строк, хорошее покрытие: parametrize для valid/invalid, edge cases (None, int, пустая строка, Unicode, граничные значения длины для телефонов).
+
+Замечания:
+
+1. **Email `user.@domain.com`** — regex допускает trailing dot в local part (`user.` → `u` + `ser.`), хотя это невалидно по RFC 5321. Аналогично `user..name@domain.com` (consecutive dots). Тест на это отсутствует.
+
+2. **`is_phone` принимает `.` и `/`** как форматирующие символы — dot используется в некоторых форматах (французский: `01.23.45.67.89`), но `/` для телефонов нетипичен. Не баг, но стоит учесть.
+
+3. Тесты не проверяют email с trailing dot (`"user.@domain.com"`) и consecutive dots (`"user..name@domain.com"`) — это false positive валидатора.
+
+Всё остальное — корректно, чисто, задание выполнено.
+
+<<<JSON>>>
+{
+  "verdict": "NEEDS_CHANGES",
+  "feedback": "Код качественный, хорошо структурирован, тесты покрывают основные сценарии. Но email-regex пропускает невалидные адреса с trailing dot и consecutive dots в local part — нужно поправить паттерн и добавить тесты.",
+  "issues": [
+    {
+      "repo": "api",
+      "file": "validators.py",
+      "line": 15,
+      "type": "bug",
+      "message": "Email regex допускает trailing dot в local part (user.@domain.com) и consecutive dots (user..name@domain.com). Паттерн [a-zA-Z0-9._%+-]* не запрещает dot в конце и подряд. Исправление: запретить dot в последней позиции local part и consecutive dots, например разбить local part на segments: r'^[a-zA-Z0-9_%+-]+(\\.[a-zA-Z0-9_%+-]+)*@...'"
+    },
+    {
+      "repo": "api",
+      "file": "test_validators.py",
+      "line": 40,
+      "type": "test",
+      "message": "Не хватает тестов на невалидные email: 'user.@domain.com' (trailing dot) и 'user..name@domain.com' (consecutive dots). Добавить оба в parametrize invalid emails."
+    }
+  ]
+}
+<<<END>>>

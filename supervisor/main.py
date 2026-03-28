@@ -169,6 +169,14 @@ async def dispatch_pending_tasks(
 
     while not ev.is_set():
         try:
+            # Release stale leases every dispatch cycle (audit fix #1)
+            try:
+                stale_count = release_stale(db_path=db_path)
+                if stale_count > 0:
+                    logger.warning("dispatch: released %d stale lease(s)", stale_count)
+            except Exception as exc:
+                logger.error("dispatch: release_stale error: %s", exc)
+
             # Очищаем завершённые tasks
             done_ids = [tid for tid, t in _running_tasks.items() if t.done()]
             for tid in done_ids:
@@ -178,7 +186,10 @@ async def dispatch_pending_tasks(
             if slots_free > 0:
                 with get_conn(db_path) as conn:
                     rows = conn.execute(
-                        "SELECT * FROM tasks WHERE status='pending' ORDER BY created_at LIMIT ?",
+                        "SELECT id, status, assigned_worker, description, "
+                        "title, priority, git_repo, source, source_contact, "
+                        "client_contact, worker_attempt "
+                        "FROM tasks WHERE status='pending' ORDER BY created_at LIMIT ?",
                         (slots_free,),
                     ).fetchall()
 
