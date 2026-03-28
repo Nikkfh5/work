@@ -237,3 +237,115 @@ def test_cleanup_old_worktrees_no_worktrees_dir(tmp_path):
     )
     removed = manager.cleanup_old_worktrees()
     assert removed == 0
+
+
+# ── Тесты ensure_agent_symlink (BUG-005) ───────────────────────────────────
+
+
+def test_ensure_agent_symlink_creates_link(tmp_path, manager):
+    """ensure_agent_symlink создаёт симлинк для произвольного агента."""
+    # Создаём worktree директорию вручную (без git)
+    wt_dir = manager.worktrees / "task-100"
+    wt_dir.mkdir(parents=True)
+    (wt_dir / "api" / "app.py").parent.mkdir(parents=True)
+    (wt_dir / "api" / "app.py").write_text("hello")
+
+    # Создаём симлинк для reviewer
+    manager.ensure_agent_symlink("task-100", "job1_reviewer")
+
+    symlink = manager.workers / "job1_reviewer" / "workspace" / "task-100"
+    assert symlink.exists()
+    # Через симлинк доступен файл из worktree
+    assert (symlink / "api" / "app.py").exists()
+    assert (symlink / "api" / "app.py").read_text() == "hello"
+
+
+def test_ensure_agent_symlink_noop_if_no_worktree(tmp_path, manager):
+    """ensure_agent_symlink ничего не делает если worktree не существует."""
+    manager.ensure_agent_symlink("nonexistent", "job1_reviewer")
+    symlink = manager.workers / "job1_reviewer" / "workspace" / "nonexistent"
+    assert not symlink.exists()
+
+
+def test_ensure_agent_symlink_idempotent(tmp_path, manager):
+    """Повторный вызов ensure_agent_symlink не ломается."""
+    wt_dir = manager.worktrees / "task-101"
+    wt_dir.mkdir(parents=True)
+
+    manager.ensure_agent_symlink("task-101", "job1_reviewer")
+    manager.ensure_agent_symlink("task-101", "job1_reviewer")
+
+    symlink = manager.workers / "job1_reviewer" / "workspace" / "task-101"
+    assert symlink.exists()
+
+
+def test_cleanup_agent_symlink(tmp_path, manager):
+    """cleanup_agent_symlink удаляет симлинк агента."""
+    wt_dir = manager.worktrees / "task-102"
+    wt_dir.mkdir(parents=True)
+
+    manager.ensure_agent_symlink("task-102", "job1_reviewer")
+    symlink = manager.workers / "job1_reviewer" / "workspace" / "task-102"
+    assert symlink.exists()
+
+    manager.cleanup_agent_symlink("task-102", "job1_reviewer")
+    assert not symlink.exists()
+
+
+# ── Тесты _remove_link_or_dir (BUG-006) ────────────────────────────────────
+
+
+def test_remove_link_or_dir_real_directory(tmp_path):
+    """_remove_link_or_dir удаляет реальную директорию с содержимым."""
+    from supervisor.repo_manager import _remove_link_or_dir
+
+    d = tmp_path / "real_dir"
+    d.mkdir()
+    (d / "file.txt").write_text("content")
+
+    _remove_link_or_dir(d)
+    assert not d.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix symlinks only")
+def test_remove_link_or_dir_symlink(tmp_path):
+    """_remove_link_or_dir удаляет симлинк, не трогая target."""
+    from supervisor.repo_manager import _remove_link_or_dir
+    from pathlib import Path
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "data.txt").write_text("keep me")
+
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    assert link.is_symlink()
+
+    _remove_link_or_dir(link)
+    assert not link.exists()
+    # Target не тронут
+    assert target.exists()
+    assert (target / "data.txt").read_text() == "keep me"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junctions only")
+def test_remove_link_or_dir_junction(tmp_path):
+    """_remove_link_or_dir удаляет Windows junction, не трогая target."""
+    from supervisor.repo_manager import _remove_link_or_dir
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "data.txt").write_text("keep me")
+
+    junction = tmp_path / "junction"
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        check=True, capture_output=True,
+    )
+    assert junction.exists()
+
+    _remove_link_or_dir(junction)
+    assert not junction.exists()
+    # Target не тронут
+    assert target.exists()
+    assert (target / "data.txt").read_text() == "keep me"

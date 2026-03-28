@@ -260,6 +260,45 @@ class RepoManager:
         )
         return wt_path
 
+    def ensure_agent_symlink(self, task_id: str, agent_id: str) -> None:
+        """
+        Создать workspace-симлинк для любого агента (worker или reviewer).
+
+        Создаёт workers/{agent_id}/workspace/{task_id}/ → worktrees/{task_id}/
+        Нужно чтобы reviewer видел те же файлы что и worker.
+        """
+        target = self.worktrees / task_id
+        if not target.exists():
+            return
+
+        symlink = self.workers / agent_id / "workspace" / task_id
+        if symlink.exists() or symlink.is_symlink():
+            return  # уже есть
+
+        symlink.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(symlink), str(target)],
+                    check=True,
+                    capture_output=True,
+                )
+            else:
+                symlink.symlink_to(target)
+            logger.info(
+                "ensure_agent_symlink: %s → %s", symlink, target
+            )
+        except Exception as exc:
+            logger.warning(
+                "ensure_agent_symlink: failed %s → %s: %s", symlink, target, exc
+            )
+
+    def cleanup_agent_symlink(self, task_id: str, agent_id: str) -> None:
+        """Удалить workspace-симлинк агента."""
+        symlink = self.workers / agent_id / "workspace" / task_id
+        if symlink.exists() or symlink.is_symlink():
+            _remove_link_or_dir(symlink)
+
     def cleanup_worktree(self, task_id: str, job: str, alias: str) -> None:
         """
         Удалить симлинк и worktree после завершения задачи.
@@ -272,16 +311,7 @@ class RepoManager:
         # 1. Удаляем симлинк
         symlink = self._symlink_path(job, task_id)
         if symlink.exists() or symlink.is_symlink():
-            try:
-                if symlink.is_dir() and not symlink.is_symlink():
-                    shutil.rmtree(symlink)
-                else:
-                    symlink.unlink()
-                logger.debug("cleanup_worktree: removed symlink %s", symlink)
-            except OSError as exc:
-                logger.warning(
-                    "cleanup_worktree: failed to remove symlink %s: %s", symlink, exc
-                )
+            _remove_link_or_dir(symlink)
 
         # 2. Удаляем worktree из git
         mirror = self._mirror_path(job, alias)
@@ -349,6 +379,29 @@ class RepoManager:
 
 
 # ── Вспомогательные функции ──────────────────────────────────────────────────
+
+
+def _remove_link_or_dir(path: Path) -> None:
+    """
+    Удалить symlink, junction или директорию.
+
+    На Windows junctions (mklink /J) не определяются через is_symlink(),
+    поэтому для директорий пробуем os.rmdir (безопасно для junctions),
+    и только при неудаче — shutil.rmtree (для реальных непустых директорий).
+    """
+    try:
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            try:
+                os.rmdir(path)
+            except OSError:
+                shutil.rmtree(path)
+        else:
+            path.unlink()
+        logger.debug("_remove_link_or_dir: removed %s", path)
+    except OSError as exc:
+        logger.warning("_remove_link_or_dir: failed to remove %s: %s", path, exc)
 
 
 def _inject_token(url: str, token: str) -> str:

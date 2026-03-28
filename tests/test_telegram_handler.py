@@ -333,6 +333,26 @@ async def test_poll_once_get_updates_error_returns_empty(handler):
 
 
 @pytest.mark.asyncio
+async def test_poll_once_timeout_logged_as_debug(handler, caplog):
+    """BUG-009: asyncio.TimeoutError from long polling → DEBUG, not ERROR."""
+    import asyncio
+    import logging
+
+    handler._bot.get_updates = AsyncMock(side_effect=asyncio.TimeoutError())
+
+    with caplog.at_level(logging.DEBUG, logger="integrations.telegram_handler"):
+        events = await handler.poll_once()
+
+    assert events == []
+    # Should NOT have ERROR level
+    error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(error_records) == 0, f"Unexpected ERROR: {error_records}"
+    # Should have DEBUG level
+    debug_records = [r for r in caplog.records if "timeout" in r.message.lower()]
+    assert len(debug_records) >= 1
+
+
+@pytest.mark.asyncio
 async def test_poll_once_no_message_update_ignored(handler):
     """Update без message (например, edited_message) игнорируется."""
     update = MagicMock()

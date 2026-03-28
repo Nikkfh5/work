@@ -18,3 +18,9 @@ logs/
 # Рабочие директории воркеров (симлинки и результаты задач)
 workers/*/workspace/*
 !workers/*/workspace/.gitkeep
+
+# Worktrees (создаются pipeline, не коммитить)
+worktrees/
+
+# Repos cache (bare mirrors)
+repos_cache/

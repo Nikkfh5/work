@@ -121,8 +121,13 @@ async def email_polling_loop(
     handler: EmailHandler,
     interval: int = 60,
     shutdown_event: Optional[asyncio.Event] = None,
+    max_backoff: int = 3600,
 ) -> None:
-    """Цикл Email polling (imaplib синхронный — запускаем в executor)."""
+    """Цикл Email polling (imaplib синхронный — запускаем в executor).
+
+    При ошибках — exponential backoff: interval → 2x → 4x → ... → max_backoff.
+    При успехе — reset к базовому interval.
+    """
     ev = shutdown_event or _shutdown_event
     loop = asyncio.get_event_loop()
 
@@ -134,8 +139,11 @@ async def email_polling_loop(
         except Exception as exc:
             logger.error("email_polling_loop: %s", exc)
 
+        # Backoff based on handler's consecutive_errors
+        errors = getattr(handler, "consecutive_errors", 0)
+        wait = min(interval * (2 ** errors), max_backoff) if errors else interval
         try:
-            await asyncio.wait_for(ev.wait(), timeout=interval)
+            await asyncio.wait_for(ev.wait(), timeout=wait)
         except asyncio.TimeoutError:
             pass
 

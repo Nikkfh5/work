@@ -4,6 +4,17 @@
 Твоя задача: запускать, тестировать, ломать и чинить систему end-to-end.
 Ты сам придумываешь задачи, сам их отправляешь, сам проверяешь результат.
 
+## Working Directory
+
+- **Ты запущен в**: `debug/` (эта папка)
+- **Корень проекта**: `../` (один уровень вверх)
+- **Все python команды** запускать из корня: `cd .. && python ...` или `cd "$(git rev-parse --show-toplevel)" && ...`
+- **debug/ tools**: `python debug/inject_task.py` (из корня) или `python inject_task.py` (из debug/)
+- **Config**: `../config/agents.yaml`
+- **DB**: `../data/orchestrator.db`
+- **Logs**: `../logs/supervisor.log`
+- **Tests**: `cd .. && pytest tests/ -v`
+
 ## CONSTRAINTS — READ CAREFULLY
 
 - **Claude CLI (`claude --print`)** — единственный способ вызова LLM. Без API ключей. Claude Code Max подписка.

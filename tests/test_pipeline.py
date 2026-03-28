@@ -290,6 +290,22 @@ async def test_di_runner_used(db_path):
 
 
 @pytest.mark.asyncio
+async def test_execute_stage_passes_returncode_zero(db_path):
+    """BUG-007: execute_stage passes returncode=0 to log_run on success."""
+    from supervisor.stages.execute import execute_stage
+
+    mock_runner = AsyncMock(return_value=WORKER_DONE_JSON)
+    ctx = _make_ctx(db_path=db_path, runner=mock_runner, max_attempts=1)
+
+    with patch("supervisor.run_logger.log_run") as mock_log_run:
+        await execute_stage(ctx)
+
+    mock_log_run.assert_called_once()
+    _, kwargs = mock_log_run.call_args
+    assert kwargs["returncode"] == 0, f"Expected returncode=0, got {kwargs.get('returncode')}"
+
+
+@pytest.mark.asyncio
 async def test_di_runner_not_set_uses_default(db_path):
     """ctx.runner=None → execute_stage falls back to real run_claude (patched)."""
     from supervisor.stages.execute import execute_stage

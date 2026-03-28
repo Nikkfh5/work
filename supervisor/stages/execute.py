@@ -220,6 +220,7 @@ async def execute_stage(ctx: WorkerContext) -> None:
             json_valid=valid,
             worker_id=ctx.worker_id,
             db_path=ctx.db_path,
+            returncode=0,  # runner raises on non-zero, so success = 0
         )
 
         if not valid:

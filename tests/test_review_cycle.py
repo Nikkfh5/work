@@ -498,6 +498,47 @@ async def test_ci_and_push_success(mock_repo_manager):
 
 
 @pytest.mark.asyncio
+async def test_reviewer_gets_agent_symlink(
+    db_path, mock_tg_handler, mock_repo_manager
+):
+    """BUG-005: reviewer stage creates symlink so reviewer can see worktree files."""
+    from supervisor.main import run_worker_cycle
+
+    task = _make_task(db_path)
+    config = _config_with_reviewer()
+
+    call_count = 0
+
+    async def mock_run_claude(prompt, cwd=None, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return WORKER_DONE_JSON
+        else:
+            return _reviewer_approved_json()
+
+    with (
+        patch(
+            "supervisor.claude_runner.run_claude",
+            AsyncMock(side_effect=mock_run_claude),
+        ),
+        patch("supervisor.stages.deliver.safe_exec", return_value=("", "", 0)),
+    ):
+        await run_worker_cycle(
+            task, config, mock_tg_handler, db_path, mock_repo_manager
+        )
+
+    # ensure_agent_symlink should have been called for reviewer
+    mock_repo_manager.ensure_agent_symlink.assert_called_once_with(
+        task["id"], "job1_reviewer"
+    )
+    # cleanup should clean reviewer symlink too
+    mock_repo_manager.cleanup_agent_symlink.assert_called_once_with(
+        task["id"], "job1_reviewer"
+    )
+
+
+@pytest.mark.asyncio
 async def test_ci_and_push_ci_fails(mock_repo_manager):
     """_run_ci_and_push fails when CI check fails."""
     from supervisor.main import _run_ci_and_push

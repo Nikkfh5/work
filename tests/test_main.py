@@ -217,6 +217,83 @@ async def test_telegram_polling_loop_continues_on_error(mock_tg_handler):
     assert call_count >= 2  # продолжил работу после ошибки
 
 
+# ── Тесты: email_polling_loop ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_email_polling_backoff_on_errors():
+    """BUG-008: email_polling_loop uses backoff via handler.consecutive_errors."""
+    from supervisor.main import email_polling_loop
+    from integrations.email_handler import EmailHandler
+    from unittest.mock import MagicMock, patch
+    import threading
+
+    handler = MagicMock(spec=EmailHandler)
+    handler.consecutive_errors = 0
+    call_count_lock = threading.Lock()
+    call_count = 0
+
+    def failing_poll():
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+        handler.consecutive_errors += 1
+        return []
+
+    handler.poll_once = failing_poll
+    ev = asyncio.Event()
+
+    task = asyncio.create_task(
+        email_polling_loop(handler, interval=0.05, shutdown_event=ev, max_backoff=1.0)
+    )
+    await asyncio.sleep(0.5)
+    ev.set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # With backoff: 0.05s -> 0.10s -> 0.20s -> 0.40s (exponential)
+    # Without backoff: ~0.5/0.05 = 10 calls
+    # With backoff: ~4-5 calls
+    assert call_count >= 2  # at least ran a few times
+    assert call_count < 8  # but not as many as without backoff
+
+
+@pytest.mark.asyncio
+async def test_email_polling_resets_backoff_on_success():
+    """After successful poll, handler.consecutive_errors resets → normal interval."""
+    from supervisor.main import email_polling_loop
+    from integrations.email_handler import EmailHandler
+    from unittest.mock import MagicMock
+    import threading
+
+    handler = MagicMock(spec=EmailHandler)
+    handler.consecutive_errors = 0
+    call_count_lock = threading.Lock()
+    call_count = 0
+
+    def sometimes_fail():
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+        if call_count <= 2:
+            handler.consecutive_errors += 1
+        else:
+            handler.consecutive_errors = 0
+        return []
+
+    handler.poll_once = sometimes_fail
+    ev = asyncio.Event()
+
+    task = asyncio.create_task(
+        email_polling_loop(handler, interval=0.05, shutdown_event=ev, max_backoff=1.0)
+    )
+    await asyncio.sleep(0.5)
+    ev.set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # After success on call 3, backoff should reset → more calls happen
+    assert call_count >= 4
+
+
 # ── Тесты: nightly_housekeeping ──────────────────────────────────────────────
 
 

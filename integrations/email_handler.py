@@ -55,6 +55,7 @@ class EmailHandler:
         self._port = port
         self._db_path = db_path
         self._router = router
+        self.consecutive_errors: int = 0
 
     def poll_once(self) -> list[dict]:
         """
@@ -65,14 +66,25 @@ class EmailHandler:
         """
         try:
             with self._connect() as imap:
-                return self._fetch_and_process(imap)
+                result = self._fetch_and_process(imap)
+                self.consecutive_errors = 0
+                return result
         except imaplib.IMAP4.error as exc:
-            logger.error("email poll_once: IMAP error: %s", exc)
+            self.consecutive_errors += 1
+            if self.consecutive_errors <= 3:
+                logger.warning("email poll_once: IMAP error: %s", exc)
+            else:
+                logger.debug("email poll_once: IMAP error (x%d): %s", self.consecutive_errors, exc)
             return []
         except OSError as exc:
-            logger.error("email poll_once: connection error: %s", exc)
+            self.consecutive_errors += 1
+            if self.consecutive_errors <= 3:
+                logger.warning("email poll_once: connection error: %s", exc)
+            else:
+                logger.debug("email poll_once: connection error (x%d): %s", self.consecutive_errors, exc)
             return []
         except Exception as exc:
+            self.consecutive_errors += 1
             logger.error("email poll_once: unexpected error: %s", exc)
             return []
 

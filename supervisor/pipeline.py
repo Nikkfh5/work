@@ -234,3 +234,14 @@ async def run_pipeline(ctx: WorkerContext, stages: list) -> None:
                         alias,
                         cleanup_exc,
                     )
+            # Cleanup reviewer symlink if reviewer was configured
+            reviewer_id = ctx.worker_cfg.get("reviewer_id")
+            if reviewer_id:
+                try:
+                    ctx.repo_manager.cleanup_agent_symlink(ctx.task_id, reviewer_id)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "pipeline: reviewer symlink cleanup failed task_id=%s: %s",
+                        ctx.task_id,
+                        cleanup_exc,
+                    )

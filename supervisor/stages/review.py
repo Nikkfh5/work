@@ -174,6 +174,10 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
     max_iterations = int(worker_cfg.get("max_review_iterations", 3))
     current_worker_result = ctx.parsed.get("result", {})
 
+    # BUG-005 fix: создаём symlink для reviewer чтобы он видел worktree файлы
+    if ctx.repo_manager and ctx.worktree_aliases:
+        ctx.repo_manager.ensure_agent_symlink(ctx.task_id, reviewer_id)
+
     for iteration in range(1, max_iterations + 1):
         logger.info(
             "review_stage: iteration %d/%d task_id=%s",
@@ -224,6 +228,7 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             json_valid=reviewer_valid,
             worker_id=reviewer_id,
             db_path=ctx.db_path,
+            returncode=0,
         )
 
         if not reviewer_valid:
@@ -336,6 +341,7 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             json_valid=worker_valid,
             worker_id=ctx.worker_id,
             db_path=ctx.db_path,
+            returncode=0,
         )
 
         if not worker_valid:

@@ -15,6 +15,7 @@ integrations/telegram_handler.py — Telegram polling + команды + уве�
   свободный текст          → создать задачу через router
 """
 
+import asyncio
 import logging
 import os
 from datetime import date, datetime, timezone
@@ -88,6 +89,9 @@ class TelegramHandler:
                 limit=100,
                 timeout=30,  # long polling: Telegram держит соединение до 30s
             )
+        except asyncio.TimeoutError:
+            logger.debug("telegram poll_once: long polling timeout (normal)")
+            return []
         except TelegramError as exc:
             logger.warning("telegram poll_once: get_updates error: %s", exc)
             return []

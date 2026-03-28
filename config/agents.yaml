@@ -48,7 +48,7 @@ workers:
 
     repos:
       - alias: api
-        url: "https://github.com/org/api"  # заменить на реальный URL
+        url: "https://github.com/Nikkfh5/test-ai-orchestrator"
         token_env: GIT_TOKEN_JOB1
         clone_strategy: shallow            # mirror|shallow|partial|sparse
         max_disk_mb: 500
@@ -63,7 +63,7 @@ workers:
 
     ci_policy:
       run_before_push:
-        - ["pytest"]
+        - ["pytest", "--tb=short", "-q"]
         - ["ruff", "check", "."]
       required_pass: true
 

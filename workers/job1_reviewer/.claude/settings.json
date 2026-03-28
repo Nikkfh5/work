@@ -1,4 +1,11 @@
 {
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
