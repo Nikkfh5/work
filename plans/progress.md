@@ -5,9 +5,9 @@
 | Параметр | Значение |
 |----------|----------|
 | Активная фаза | 2 |
-| Тесты (всего) | 290 |
+| Тесты (всего) | 301 |
 | Тесты (статус) | ✅ все зелёные |
-| Последнее обновление | 2026-03-21 |
+| Последнее обновление | 2026-03-28 |
 
 ---
 
@@ -29,7 +29,7 @@
 - [x] `integrations/email_handler.py` — IMAP + Message-ID dedup (17 тестов)
 - [x] `supervisor/main.py` — asyncio event loop + scheduling (28 тестов)
 
-## Фаза 2 — Воркер-цикл ⏳ В ОЧЕРЕДИ
+## Фаза 2 — Воркер-цикл ✅ ЗАВЕРШЕНА
 
 - [x] `workers/job1_worker/CLAUDE.md` — CLAUDE.md шаблон для воркера с Context7 правилом (8 тестов)
 - [x] `workers/job1_worker/.mcp.json` — Context7 MCP подключение
@@ -74,7 +74,8 @@
 - [x] `deploy/supervisor.service` — systemd unit (auto-restart, EnvironmentFile, SIGTERM)
 - [x] `deploy/deploy.sh` — rsync + venv + pip + systemctl restart
 - [x] `Makefile` — test, lint, run, logs, deploy, status, setup-mcp
-- [ ] Деплой + верификация на VPS (когда будет готов)
+- [x] `worktrees/` + `repos_cache/` в `.gitignore` — runtime artifacts не в git
+- [ ] Деплой + верификация на VPS (отложен — Unicode пути на Windows ломают git, на VPS/ASCII заработает)
 
 ---
 
@@ -87,6 +88,11 @@
 | 2026-02 | 1 | kv_store для TG offset | Простота vs отдельная таблица |
 | 2026-02 | 1 | asyncio_mode=auto в pytest.ini | pytest-asyncio требует |
 | 2026-02 | 1 | os.environ["DB_PATH"] в фикстуре | Паттерн изоляции тестов |
+| 2026-03-28 | debug | E2E debug-сессия: 13 багов найдено, 10 пофикшено | Первый реальный прогон pipeline |
+| 2026-03-28 | debug | ensure_agent_symlink для reviewer | BUG-005: reviewer не видел файлы worker'а |
+| 2026-03-28 | debug | Worker permissions (Read/Write/Edit/Glob/Grep) | BUG-010: claude --print не мог писать файлы |
+| 2026-03-28 | debug | worktrees/ + repos_cache/ в .gitignore | Runtime artifacts не должны быть в git |
+| 2026-03-28 | debug | VPS оверкилл пока — deliver push отложен | Unicode пути (Рабочий стол) ломают git, но на VPS/ASCII заработает |
 
 ## Блокеры
 
@@ -117,6 +123,7 @@ _Нет активных блокеров._
 - [x] Git push в worker cycle ✅ (реализовано в Фазе 3: _run_ci_and_push)
 - [ ] sequential thinking MCP, filesystem MCP, wcgw MCP
 - [ ] Декомпозиция main.py → отдельный `supervisor/worker_cycle.py`
+- [ ] Тюнинг reviewer/worker retry промптов (reviewer находит баги, worker не может пофиксить за 3 итерации)
 
 ### Внешние референсы (посмотреть перед реализацией)
 

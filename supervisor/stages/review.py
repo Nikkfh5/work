@@ -39,6 +39,8 @@ def _build_reviewer_prompt(
     task_description: str,
     worker_result: dict,
     repos_context: Optional[list[dict]] = None,
+    iteration: int = 1,
+    prev_issues: Optional[list[dict]] = None,
 ) -> str:
     """Промпт для ревьюера: задание + результат воркера + JSON формат."""
     notes = worker_result.get("notes", "")
@@ -57,6 +59,25 @@ def _build_reviewer_prompt(
             lines.append(f"  - {repo['alias']}: {repo['path']}")
         workspace_section = "\n".join(lines) + "\n\n"
 
+    # На повторных итерациях — фокус на проверке исправлений, не на поиске новых проблем
+    re_review_section = ""
+    if iteration > 1 and prev_issues:
+        issues_lines = []
+        for iss in prev_issues:
+            file = iss.get("file", "?")
+            msg = iss.get("message", "")
+            issues_lines.append(f"  - {file}: {msg}")
+        re_review_section = f"""
+ВНИМАНИЕ: Это повторное ревью (итерация {iteration}).
+На прошлой итерации ты нашёл эти замечания:
+{chr(10).join(issues_lines)}
+
+Воркер сообщил что исправил: {notes}
+
+Твоя задача — ТОЛЬКО проверить что предыдущие замечания исправлены.
+НЕ ищи новых проблем. НЕ повышай планку. Если предыдущие issues пофикшены — APPROVED.
+"""
+
     return f"""\
 Ты — ревьюер. Проверь результат воркера по заданию.
 
@@ -70,11 +91,15 @@ def _build_reviewer_prompt(
 
 Изменённые файлы:{changed_files_section if changed_files_section else " (нет)"}
 
-{workspace_section}─────────────────────────────────────────────
+{workspace_section}{re_review_section}─────────────────────────────────────────────
 Проверь:
 1. Код соответствует заданию
-2. Нет явных ошибок, уязвимостей, нарушений стиля
+2. Нет явных ошибок или уязвимостей
 3. Тесты покрывают основные сценарии
+
+Будь прагматичным: APPROVED если код работает и выполняет задание.
+Мелкие стилевые замечания — не повод для NEEDS_CHANGES.
+NEEDS_CHANGES только при реальных багах, сломанной логике или отсутствии тестов.
 
 Выведи результат СТРОГО в этом формате:
 
@@ -131,10 +156,15 @@ def _build_worker_retry_prompt(
 
 Предыдущий результат: {prev_notes}
 
-Замечания ревьюера:
+Замечания ревьюера (ИСПРАВЬ ИМЕННО ЭТО):
 {issues_text}
 
-Исправь только указанные замечания. Не трогай то, что уже работает.
+Инструкция:
+1. Прочитай файлы которые ты менял на предыдущей попытке
+2. Исправь ТОЛЬКО указанные замечания — точечно, минимальным diff
+3. НЕ переписывай с нуля. НЕ трогай то, что уже работает
+4. Если замечание содержит конкретный fix (regex, код) — используй его как подсказку
+5. Это попытка {attempt} из {max_attempts} — если не исправишь, задача уйдёт на ручное разбирательство
 
 ─────────────────────────────────────────────
 {workspace_section}ОБЯЗАТЕЛЬНО: после выполнения выведи результат СТРОГО в этом формате:
@@ -173,6 +203,7 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
     reviewer_dir = f"workers/{reviewer_id}"
     max_iterations = int(worker_cfg.get("max_review_iterations", 3))
     current_worker_result = ctx.parsed.get("result", {})
+    prev_issues: list[dict] = []  # issues from previous iteration for re-review focus
 
     # BUG-005 fix: создаём symlink для reviewer чтобы он видел worktree файлы
     if ctx.repo_manager and ctx.worktree_aliases:
@@ -186,9 +217,13 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             ctx.task_id,
         )
 
-        # Build reviewer prompt
+        # Build reviewer prompt (on re-review: focus on prev issues, not new ones)
         reviewer_prompt = _build_reviewer_prompt(
-            ctx.task_description, current_worker_result, ctx.repos_context
+            ctx.task_description,
+            current_worker_result,
+            ctx.repos_context,
+            iteration=iteration,
+            prev_issues=prev_issues if iteration > 1 else None,
         )
 
         # Run reviewer
@@ -290,9 +325,12 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             ctx.worker_status = "_review_handled"
             return
 
+        # Save issues for next reviewer iteration (re-review focus)
+        prev_issues = reviewer_parsed.get("issues", [])
+
         # Build worker retry prompt and re-run worker
         prev_notes = current_worker_result.get("notes", "")
-        issues = reviewer_parsed.get("issues", [])
+        issues = prev_issues
         retry_prompt = _build_worker_retry_prompt(
             ctx.task_description,
             attempt=iteration + 1,
