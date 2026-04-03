@@ -41,6 +41,19 @@ SAFE_ENV_KEYS = {
     "PYTHONPATH",
     "VIRTUAL_ENV",
     "NODE_PATH",
+    # Windows: без этих переменных subprocess/pytest/asyncio не работают
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMFILES",
+    "WINDIR",
+    "HOMEDRIVE",
+    "HOMEPATH",
 }
 
 # Паттерны аргументов которые НИКОГДА не разрешены ни в какой команде

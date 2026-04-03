@@ -67,6 +67,10 @@ class RepoManager:
         """Путь к worktree для задачи: worktrees/{task_id}/{alias}"""
         return self.worktrees / task_id / alias
 
+    def worktree_abs_path(self, task_id: str, alias: str) -> str:
+        """Абсолютный путь к worktree как строка (для subprocess cwd)."""
+        return os.path.abspath(str(self._worktree_path(task_id, alias)))
+
     def _symlink_path(self, job: str, task_id: str) -> Path:
         """Путь к симлинку воркера: workers/{job}_worker/workspace/{task_id}"""
         return self.workers / f"{job}_worker" / "workspace" / task_id
@@ -227,15 +231,16 @@ class RepoManager:
         # Определяем реальную базовую ветку из mirror (может быть master или main)
         actual_base = self._resolve_base_branch(mirror, base_branch)
 
-        # Создаём worktree с новой веткой от base_branch
+        # Абсолютный путь — иначе git создаст worktree относительно mirror dir
+        abs_wt = os.path.abspath(str(wt_path))
         result = self._run_git(
-            ["worktree", "add", "-b", branch, str(wt_path), actual_base],
+            ["worktree", "add", "-b", branch, abs_wt, actual_base],
             cwd=str(mirror),
         )
         if result.returncode != 0:
             # Пробуем без -b если ветка уже существует
             result = self._run_git(
-                ["worktree", "add", str(wt_path), branch],
+                ["worktree", "add", abs_wt, branch],
                 cwd=str(mirror),
             )
             if result.returncode != 0:

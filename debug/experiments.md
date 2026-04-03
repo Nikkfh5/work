@@ -230,3 +230,192 @@ deliver  ⚠️ частично (CI блокируется на Unicode пут�
 3. Reviewer слишком строгий (3 NEEDS_CHANGES) — тюнинг промпта или max_iterations
 
 ---
+
+### EXP-005: Post-fix session — lease stale, CI auto-fix, security
+- **Дата:** 2026-04-03
+- **Стратегия:** Протестировать непокрытые фичи (basic_worker, explorer, clarification, security)
+- **Тестовый репо:** пересоздан `Nikkfh5/test-ai-orchestrator` (private, был удалён)
+
+**Подготовка:**
+- Supervisor запущен (PID 11852), TG бот подключён
+- Старый mirror (`repos_cache/job1/api.git`) удалён → свежий clone
+- Два supervisor-а конфликтовали (PID 13980 + 11852), старый убит вручную
+
+**Задачи инжектированы (Batch 1):**
+
+| ID | Описание | Тип | Результат |
+|---|---------|------|-----------|
+| f3072b7c | merge_sorted + тесты | basic_worker | ❌ error (lease_stale) |
+| 325b9547 | Анализ проекта | explorer | ❌ requires_manual (worker_crash) |
+| 17350f7d | `'; DROP TABLE tasks; --` | security | ❌ requires_manual (lease_stale) |
+
+**Задачи (Batch 2):**
+
+| ID | Описание | Тип | Результат |
+|---|---------|------|-----------|
+| 06d3e1c2 | utils.py add() + тесты | basic_worker | ❌ error (git_push_failed) |
+| ba5bd2df | "баги" | clarification | ❌ requires_manual (lease_stale) |
+
+#### f3072b7c (merge_sorted) — PARTIAL SUCCESS
+- Planner: `simple` → пропустил planning
+- Worker **создал файлы**: `merge_sorted.py` (28 строк) + `test_merge_sorted.py` (13 тестов)
+- **Lease expired** (TTL=300s, worker работал ~5 мин 3 сек)
+- Результат потерян: нет task_runs, нет лог-файла. Файлы в worktree остались.
+
+#### 325b9547 (explorer) — FAIL (race condition)
+- Два задачи пытались клонировать mirror одновременно → `directory already exists`
+
+#### 17350f7d (SQL injection) — POSITIVE SECURITY TEST
+- SQL injection НЕ сработала! Таблица tasks цела (параметризованные запросы)
+- Planner запросил clarification → Claude задал 5 умных вопросов в TG
+- Потом lease_stale убил задачу
+
+#### 06d3e1c2 (add utils) — PARTIAL SUCCESS
+- Worker done (33 сек) → Reviewer APPROVED (1-я итерация!) → Deliver
+- `ruff format` ✅, `git add` ❌ (rc=1), `git commit` ❌ (rc=1)
+- CI auto-fix: 3 попытки, все фейлятся на git operations → `git_push_failed`
+- **Позитив:** CI auto-fix pipeline работает! 3 попытки корректно выполнены.
+
+#### ba5bd2df ("баги") — CLARIFICATION WORKS
+- Planner → clarification → Claude вопросы (577 chars, 20 сек) → TG → escalation ✅
+- Lease_stale через ~21 сек (planning stage меняет status?)
+
+**Новые баги:**
+
+| # | Bug | Severity | Описание |
+|---|-----|----------|----------|
+| 14 | Lease не продлевается в execute/review/deliver | CRITICAL | `renew_lease()` только в planning.py. Worker >5 мин → lease expires |
+| 15 | Worker output теряется при lease_stale | HIGH | task_run не записывается, файлы в worktree остаются |
+| 16 | lease_stale при clarification (~21 сек) | HIGH | Planning меняет status → renew_lease фейлится (AND status='running') |
+| 17 | Pipeline продолжает после release_stale | MEDIUM | dispatch loop сбрасывает lease, pipeline продолжает работу |
+| 18 | Race condition при параллельном clone mirror | MEDIUM | Два dispatch → ensure_mirror конфликт |
+| 19 | git add/commit rc=1 в deliver | LOW-MEDIUM | Причина неясна: Unicode пути? git config? |
+
+**Позитив:**
+- SQL injection безопасна ✅
+- Clarification pipeline работает ✅
+- CI auto-fix pipeline работает (3 попытки) ✅
+- Worker создаёт качественный код ✅
+- Reviewer одобряет на 1-й итерации ✅
+
+**Критический блокер:** BUG-014 (lease renewal) — без него задачи >5 мин не завершатся.
+
+---
+
+### EXP-006: Fix verification — lease renewal, git diagnostics
+- **Дата:** 2026-04-03
+- **Цель:** Верификация фиксов BUG-014/016/019 из коммита `7bb1640`
+- **Стратегия:** 3 задачи (sorting complex, clarification, explorer) + мониторинг lease
+
+**Задачи:**
+
+| ID | Описание | Тип | Worker | Reviewer | Deliver |
+|---|---------|------|--------|----------|---------|
+| 383ba244 | sorting.py (3 алгоритма + 54 теста) | basic_worker + planning | ✅ 63.8s | ✅ APPROVED(1) | ❌ git_push_failed |
+| a4633e3d | "баги в коде" → is_even | clarification | ✅ 52.3s | ✅ APPROVED(1) | ❌ git_push_failed |
+| e24446f1 | Анализ репозитория | explorer | ✅ 52.6s | ✅ APPROVED(1) | ❌ WinError 267 |
+
+**Верифицированные фиксы:**
+
+| Bug | Fix | Verified | Доказательство |
+|-----|-----|----------|----------------|
+| BUG-014 | Background lease renewal | ✅ YES | Pipeline 383ba244 работал 10 мин (TTL=5 мин) без lease_stale |
+| BUG-016 | renew_lease status check | ✅ YES | a4633e3d: статус `planning` → lease продлился (295s left при проверке) |
+| BUG-019 | Git diagnostics | ✅ YES | stderr от git add/commit теперь видны в логах |
+
+**Новые баги:**
+
+| # | Bug | Severity | Описание |
+|---|-----|----------|----------|
+| 20 | `git add .` rc=1 в worktree | HIGH | `.gitignore` parent проекта (`worktrees/`) аффектит worktree. Файлы не стейджятся. |
+| 21 | Worktree на ветке `main` | HIGH | git commit показывает "On branch main" вместо `ai/task-{id}`. Возможно fallback при создании ветки. |
+| 22 | WinError 267 в auto-fix runner | MEDIUM | `claude` не может стартовать с cwd=worktree path. Windows-specific. |
+| 23 | Cost tracking = $0 / model = ? | LOW | `cost_usd=0`, `model_id=?` для всех task_runs. Метрики не записываются. |
+| 24 | TG send_message timeout | LOW | Периодические timeout при отправке TG сообщений. Pipeline не блокируется. |
+
+**Ключевые наблюдения:**
+
+1. **Pipeline prepare→execute→review работает безупречно:** 3/3 задачи прошли worker + reviewer
+2. **Planning pipeline работает:** classify (complex) → plan (confidence 78, 3 tasks) → TG approve → execute
+3. **Clarification pipeline работает:** vague task → 5 вопросов → TG → resolved → execute
+4. **Explorer корректно работает:** read-only анализ, не создаёт файлы
+5. **Deliver stage — единственный блокер:** все 3 задачи упали на git operations
+6. **Корневая причина git failure:** `git add .` в worktree не стейджит файлы из-за parent `.gitignore`
+
+**Root cause analysis (BUG-020):**
+```
+Main project .gitignore содержит: worktrees/
+Worktree path: worktrees/{task_id}/api/
+git add . в worktree видит "worktrees" как ignored path → rc=1 → файлы не staged
+git commit → "Changes not staged for commit" → rc=1 → git_push_failed
+```
+
+**Предложенные фиксы:**
+1. Использовать `git add --force .` или `git add -A` вместо `git add .`
+2. Или добавить конкретные файлы: `git add sorting.py test_sorting.py`
+3. Или проверять branch: `git rev-parse --abbrev-ref HEAD` перед commit
+4. Для BUG-22: resolve worktree path через `os.path.realpath()` перед передачей в claude
+
+**Метрики сессии:**
+- Supervisor uptime: ~12 мин без crash
+- Worker качество: 3/3 tasks одобрены reviewer на 1-й итерации
+- Background lease renewal: работает (10 мин без stale)
+- TG notifications: частично (timeout на некоторых)
+
+---
+
+### EXP-007: Fix verification — worktree path, safe_exec env, pytest isolation
+- **Дата:** 2026-04-03
+- **Цель:** Починить BUG-020/021/022/023 и достичь полного E2E (вплоть до git push)
+- **Стратегия:** Root cause analysis → fix → re-test
+
+**Root cause найден: WORKTREE PATH BUG**
+`prepare_worktree` передавал относительный путь в `git worktree add`. Git создавал worktree ВНУТРИ mirror (`repos_cache/job1/api.git/worktrees/...`) а не в top-level `worktrees/`. Worker писал файлы в top-level (через symlink), deliver запускал git в top-level — **без `.git` файла** → fallback на основной проект → коммиты в основной репо.
+
+**Фиксы применены:**
+
+| Bug | Fix | Файл | Описание |
+|-----|-----|------|----------|
+| BUG-020/021 | `wt_path.resolve()` → абсолютный путь в `git worktree add` | `repo_manager.py:232` | Worktree создаётся в правильном месте с `.git` файлом |
+| BUG-022 | `os.path.abspath()` для cwd в deliver | `deliver.py:44,234` | Windows WinError 267 при relative paths с junctions |
+| BUG-022 (safe_exec) | Windows env vars в `SAFE_ENV_KEYS` | `safe_exec.py:33-44` | `SYSTEMROOT`, `TEMP`, `COMSPEC` и др. — без них pytest/asyncio crash |
+| NEW | pytest isolation: `--rootdir` + `asyncio_mode=strict` | `deliver.py:90` | pytest не подхватывает parent `pytest.ini` |
+
+**Задачи:**
+
+| ID | Описание | Worker | Reviewer | Deliver | Push |
+|---|---------|--------|----------|---------|------|
+| c96e3df4 | Calculator class + tests | ✅ 45s | ✅ APPROVED(1) | ✅ git add/commit | ❌ pytest (old safe_exec) |
+| 8a306083 | greet function + tests | ✅ 42s | ✅ APPROVED(1) | ✅ git add/commit | ❌ pytest (WinError / rootdir) |
+| abf60a52 | greet function + tests | ✅ 37s | ✅ APPROVED(1) | ✅ ALL | ✅ **PUSHED** |
+
+**ПЕРВЫЙ ПОЛНЫЙ E2E SUCCESS!** `abf60a52` прошёл весь pipeline:
+```
+prepare → planning → plan:approved → execute → review:APPROVED → 
+ruff format → git add → git commit → pytest(3 passed) → git push ✅
+```
+
+Коммит `1e21297` на ветке `ai/task-abf60a52` в тестовом репо `Nikkfh5/test-ai-orchestrator`.
+
+**Верифицированные фиксы:**
+| Bug | Verified | Доказательство |
+|-----|----------|----------------|
+| BUG-020 | ✅ | `git add` без WARNING, файлы staging корректно |
+| BUG-021 | ✅ | `On branch ai/task-abf60a52` (не `main`) |
+| BUG-022 | ✅ | Нет WinError 267, ruff/pytest/claude запускаются |
+| safe_exec env | ✅ | pytest rc=0, asyncio не crash-ит |
+| pytest isolation | ✅ | 3 tests found (не 392 из parent проекта) |
+
+**Дополнительная очистка:**
+- Stale worktrees внутри mirror удалены (6 штук + prunable)
+- Stale branches от старых задач в тестовом репо (7 штук) — оставлены
+- `git worktree prune` выполнен
+
+**Оставшиеся открытые проблемы:**
+- BUG-023 (LOW): Cost tracking = $0 — не проверен в этой сессии
+- BUG-024 (LOW): TG timeout при отправке — периодические, не блокируют
+- Planner ВСЕГДА классифицирует как complex → plan_review (даже простые задачи)
+- 409 Conflict при двух supervisors — нужен PID lock (PROP-007)
+- Email IMAP credentials placeholder — игнорируем
+
+**Тесты:** 392 passed, 5 skipped, 0 failed

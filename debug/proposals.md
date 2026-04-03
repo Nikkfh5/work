@@ -42,3 +42,21 @@ Append-only лог предложений по улучшению системы
 - **Приоритет:** MEDIUM
 - **Описание:** Два supervisor-а запускаются одновременно → TG 409 Conflict + race conditions
 - **Решение:** PID lock file при старте supervisor, fail-fast если уже запущен
+
+### PROP-008: Fix git add в worktree (BUG-020/021 fix) — БЛОКЕР DELIVER
+- **Приоритет:** CRITICAL
+- **Описание:** `git add .` в worktree не стейджит файлы из-за parent `.gitignore` содержащего `worktrees/`
+- **Решение (вариант A):** Использовать `git add -A` или `git add --force .`
+- **Решение (вариант B):** Парсить `changed_files` из worker JSON и добавлять конкретные файлы: `git add sorting.py test_sorting.py`
+- **Решение (вариант C):** Добавить `.gitignore` override в worktree с `!*` правилом
+- **Дополнительно:** Проверить что worktree на правильной ветке (`git rev-parse --abbrev-ref HEAD`) перед commit
+
+### PROP-009: WinError 267 при claude subprocess в worktree (BUG-022)
+- **Приоритет:** MEDIUM
+- **Описание:** `claude --print` не может стартовать с cwd = worktree junction path
+- **Решение:** `os.path.realpath(wt_path)` перед передачей в subprocess. Или использовать short path (8.3) на Windows.
+
+### PROP-010: Cost tracking не записывается (BUG-023)
+- **Приоритет:** LOW
+- **Описание:** `cost_usd=0`, `model_id=?` для всех task_runs
+- **Где проверить:** `run_claude_tracked()` в `cost_tracker.py` — парсит ли `--output-format json`? Передаются ли метрики в `log_run()`?

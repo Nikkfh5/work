@@ -40,7 +40,7 @@ async def _run_ci_and_push(
         (success, error_message)
     """
     exec_fn = executor or safe_exec
-    wt_path = str(repo_mgr._worktree_path(task_id, alias))
+    wt_path = repo_mgr.worktree_abs_path(task_id, alias)
 
     # 1. Style policy — run formatters before commit
     style_policy = worker_cfg.get("style_policy", {})
@@ -84,6 +84,9 @@ async def _run_ci_and_push(
     ci_policy = worker_cfg.get("ci_policy", {})
     ci_required = ci_policy.get("required_pass", False)
     for ci_cmd in ci_policy.get("run_before_push", []):
+        # Изолировать pytest от parent проекта (worktree != project root)
+        if ci_cmd and ci_cmd[0] == "pytest" and not any(a.startswith("--rootdir") for a in ci_cmd):
+            ci_cmd = list(ci_cmd) + [f"--rootdir={wt_path}"]
         try:
             _out, _err, rc = exec_fn(ci_cmd, cwd=wt_path, timeout=300)
             if rc != 0 and ci_required:
@@ -228,7 +231,7 @@ async def deliver_stage(ctx: WorkerContext) -> None:
 
                     runner = ctx.runner or _default_runner
                     # Use worktree path so fixes land in the right place
-                    fix_cwd = str(ctx.repo_manager._worktree_path(ctx.task_id, repo["alias"])) if ctx.repo_manager else ctx.worker_dir
+                    fix_cwd = ctx.repo_manager.worktree_abs_path(ctx.task_id, repo["alias"]) if ctx.repo_manager else ctx.worker_dir
                     _fix_stdout, _fix_metrics = await run_claude_tracked(
                         fix_prompt, cwd=fix_cwd, timeout=ctx.worker_timeout, runner=runner
                     )

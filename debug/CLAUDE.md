@@ -18,9 +18,13 @@
 2. python debug/inject_task.py --health  — проверить здоровье системы
 3. python debug/boss.py coverage         — что уже протестировано
 4. python debug/boss.py analyze          — состояние DB
-5. Прочитать debug/findings.md           — прошлые находки
-6. Прочитать debug/proposals.md          — нерешённые проблемы
-7. Сделать вывод: на чём фокусироваться в этой сессии
+5. Прочитать debug/fixes.md             — ЧТО ПОЧИНИЛИ с прошлого раза (re-test список!)
+6. Прочитать debug/findings.md           — прошлые находки
+7. Прочитать debug/proposals.md          — нерешённые проблемы
+8. Сделать вывод: на чём фокусироваться в этой сессии
+   - Приоритет 1: Re-test фиксов из fixes.md (верифицировать что реально работает)
+   - Приоритет 2: Открытые баги из findings.md
+   - Приоритет 3: Новые фичи / edge cases
 ```
 
 **Фаза 2: ЗАПУСК SUPERVISOR** (~30 сек)
@@ -55,6 +59,15 @@ D) **Если прошлые findings показали баги** → точеч
 ```
 python debug/inject_task.py "задача воспроизводящая баг"
 python debug/inject_task.py --status --watch
+```
+
+E) **Если в fixes.md есть непроверенные фиксы** → СНАЧАЛА re-test:
+```
+# Прочитать Re-test секцию каждого FIX-XXX
+# Создать задачу которая воспроизводит оригинальный баг
+python debug/inject_task.py "задача из Re-test секции FIX-XXX"
+# Проверить что баг больше не воспроизводится
+# Обновить fixes.md: добавить "Verified: YES/NO (EXP-XXX)"
 ```
 
 Во время выполнения — мониторить:
@@ -181,6 +194,7 @@ python debug/inject_task.py --generate 3          # 3 случайных зад�
 | `debug/experiments.md` | Лог экспериментов (EXP-001, EXP-002...) | Ты (босс) |
 | `debug/findings.md` | Автоматические находки | boss.py |
 | `debug/proposals.md` | Предложения по улучшению | boss.py |
+| `debug/fixes.md` | Отчёт о фиксах (FIX-001, FIX-002...) | Фиксер (после починки багов) |
 
 ---
 
