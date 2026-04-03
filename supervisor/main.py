@@ -189,7 +189,7 @@ async def dispatch_pending_tasks(
                     rows = conn.execute(
                         "SELECT id, status, assigned_worker, description, "
                         "title, priority, git_repo, source, source_contact, "
-                        "client_contact, worker_attempt "
+                        "client_contact, worker_attempt, model "
                         "FROM tasks WHERE status='pending' ORDER BY created_at LIMIT ?",
                         (slots_free,),
                     ).fetchall()
@@ -265,6 +265,7 @@ async def run_worker_cycle(
         ),
         planning_enabled=planning_enabled,
         planning_config=planning_cfg,
+        model=task.get("model") or worker_cfg.get("model", ""),
     )
 
     logger.info(

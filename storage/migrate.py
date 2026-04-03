@@ -190,6 +190,11 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         )
         """,
     ),
+    (
+        21,
+        "Add model column to tasks for A/B testing",
+        "ALTER TABLE tasks ADD COLUMN model TEXT",
+    ),
 ]
 
 

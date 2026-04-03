@@ -39,6 +39,7 @@ async def run_claude_tracked(
     cwd: Optional[str] = None,
     timeout: int = 300,
     runner: Optional[Callable] = None,
+    model: Optional[str] = None,
 ) -> tuple[str, dict]:
     """
     Run Claude CLI and return (result_text, metrics_dict).
@@ -51,6 +52,7 @@ async def run_claude_tracked(
         cwd: рабочая директория
         timeout: таймаут в секундах
         runner: DI replacement for run_claude (tests)
+        model: модель Claude (e.g. "opus", "sonnet"). None → CLI default.
 
     Returns:
         (result_text, metrics) where metrics contains:
@@ -70,13 +72,14 @@ async def run_claude_tracked(
         return result, metrics
 
     # Real mode: Claude CLI with --output-format json
-    return await _run_claude_json(prompt, cwd, timeout)
+    return await _run_claude_json(prompt, cwd, timeout, model=model)
 
 
 async def _run_claude_json(
     prompt: str,
     cwd: Optional[str] = None,
     timeout: int = 300,
+    model: Optional[str] = None,
 ) -> tuple[str, dict]:
     """
     Run Claude CLI with --output-format json and parse the response.
@@ -86,7 +89,10 @@ async def _run_claude_json(
     """
     from supervisor.claude_runner import CLAUDE_CLI, ClaudeRunnerError
 
-    cmd = [CLAUDE_CLI, "--print", "--output-format", "json", prompt]
+    cmd = [CLAUDE_CLI, "--print", "--output-format", "json"]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.append(prompt)
 
     logger.info("cost_tracker: running claude in %s (timeout=%ds)", cwd or ".", timeout)
 

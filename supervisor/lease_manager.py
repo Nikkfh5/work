@@ -143,6 +143,11 @@ def renew_lease(
     now = now_fn()
     new_locked_until = _add_seconds(now, ttl)
 
+    # Allow renewal for any active (non-terminal) status — not just 'running'.
+    # Planning stage changes status to 'planning'/'plan_review' while holding
+    # the lease; renewal must still work. (BUG-016 fix)
+    _terminal = ("done", "cancelled", "rejected", "error")
+
     with get_conn(db_path) as conn:
         result = conn.execute(
             """
@@ -152,9 +157,9 @@ def renew_lease(
             WHERE id          = ?
               AND locked_by   = ?
               AND lease_token = ?
-              AND status      = 'running'
+              AND status NOT IN (?, ?, ?, ?)
             """,
-            (new_locked_until, task_id, worker_id, lease_token),
+            (new_locked_until, task_id, worker_id, lease_token, *_terminal),
         )
         renewed = result.rowcount > 0
 

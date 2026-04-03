@@ -232,7 +232,8 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
         # Run reviewer
         try:
             reviewer_stdout, reviewer_metrics = await run_claude_tracked(
-                reviewer_prompt, cwd=reviewer_dir, timeout=ctx.worker_timeout, runner=runner
+                reviewer_prompt, cwd=reviewer_dir, timeout=ctx.worker_timeout,
+                runner=runner, model=ctx.model or None,
             )
             ctx.cumulative_cost_usd += reviewer_metrics.get("cost_usd", 0)
             ctx.cumulative_input_tokens += reviewer_metrics.get("input_tokens", 0)
@@ -381,7 +382,8 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
 
         try:
             worker_stdout, worker_metrics = await run_claude_tracked(
-                retry_prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout, runner=runner
+                retry_prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout,
+                runner=runner, model=ctx.model or None,
             )
             ctx.cumulative_cost_usd += worker_metrics.get("cost_usd", 0)
             ctx.cumulative_input_tokens += worker_metrics.get("input_tokens", 0)

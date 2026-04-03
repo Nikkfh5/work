@@ -239,7 +239,8 @@ async def execute_stage(ctx: WorkerContext) -> None:
         # Запустить claude CLI
         try:
             stdout, metrics = await run_claude_tracked(
-                prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout, runner=runner
+                prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout,
+                runner=runner, model=ctx.model or None,
             )
             # Accumulate cost metrics
             ctx.cumulative_cost_usd += metrics.get("cost_usd", 0)

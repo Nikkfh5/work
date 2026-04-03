@@ -74,6 +74,9 @@ class WorkerContext:
     planning_enabled: bool = False  # from config supervisor.planning.enabled
     planning_config: dict = field(default_factory=dict)  # supervisor.planning section
 
+    # Model selection
+    model: str = ""  # Claude model (e.g. "opus", "sonnet"). Empty → CLI default.
+
     # Cost tracking (accumulated across all runner calls in this pipeline)
     cumulative_cost_usd: float = 0.0
     cumulative_input_tokens: int = 0
@@ -210,9 +213,47 @@ def _worker_to_job(worker_id: str) -> str:
 # ── Pipeline engine ──────────────────────────────────────────────────────────
 
 
+async def _background_lease_renewal(ctx: WorkerContext, stop_event) -> None:
+    """
+    Background task: renew lease every TTL/2 seconds while pipeline runs.
+
+    Fixes BUG-014: without this, leases expire during long worker/review stages.
+    Stops when stop_event is set (pipeline finished or errored).
+    """
+    import asyncio
+
+    interval = max(ctx.lease_ttl // 2, 30)  # at least every 30s
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            return  # stop_event was set
+        except asyncio.TimeoutError:
+            pass  # interval elapsed, time to renew
+
+        if not ctx.token:
+            return  # no lease yet (prepare_stage not run)
+
+        renewed = renew_lease(
+            ctx.task_id,
+            ctx.worker_id,
+            ctx.token,
+            ttl=ctx.lease_ttl,
+            db_path=ctx.db_path,
+        )
+        if not renewed:
+            logger.warning(
+                "background_lease_renewal: lease lost task_id=%s",
+                ctx.task_id,
+            )
+            return  # lease gone, pipeline will fail naturally
+
+
 async def run_pipeline(ctx: WorkerContext, stages: list) -> None:
     """
     Прогнать ctx через stages. Обработать ошибки, cleanup в finally.
+
+    Launches a background lease renewal task that keeps the lease alive
+    throughout the entire pipeline execution (BUG-014 fix).
 
     After each stage (and on errors), accumulated events are dispatched
     via handle_events from supervisor.event_handlers.
@@ -221,7 +262,16 @@ async def run_pipeline(ctx: WorkerContext, stages: list) -> None:
         ctx: WorkerContext -- mutated by each stage
         stages: list[Callable[[WorkerContext], Awaitable[None]]]
     """
+    import asyncio
+
     from supervisor.event_handlers import handle_events
+
+    # Start background lease renewal
+    stop_renewal = asyncio.Event()
+    renewal_task = asyncio.create_task(
+        _background_lease_renewal(ctx, stop_renewal),
+        name=f"lease_renewal_{ctx.task_id[:8]}",
+    )
 
     try:
         for stage in stages:
@@ -248,6 +298,14 @@ async def run_pipeline(ctx: WorkerContext, stages: list) -> None:
         except Exception:
             pass
     finally:
+        # Stop background lease renewal
+        stop_renewal.set()
+        renewal_task.cancel()
+        try:
+            await renewal_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
         # Worktree cleanup
         if ctx.worktree_aliases and ctx.repo_manager:
             for alias in ctx.worktree_aliases:

@@ -162,15 +162,24 @@ class RepoManager:
                     f"git fetch failed for {job}/{alias}: {result.stderr[:300]}"
                 )
         else:
-            # Клонируем
+            # Клонируем (with retry for concurrent access — BUG-018 fix)
             mirror.parent.mkdir(parents=True, exist_ok=True)
             logger.info(
                 "ensure_mirror: cloning %s/%s strategy=%s", job, alias, clone_strategy
             )
 
+            # Another task may have created the mirror concurrently
+            if mirror.exists():
+                logger.info("ensure_mirror: mirror appeared concurrently %s/%s", job, alias)
+                return mirror
+
             clone_args = _build_clone_args(auth_url, str(mirror), clone_strategy)
             result = self._run_git(clone_args)
             if result.returncode != 0:
+                # Retry once: if another task just finished cloning
+                if mirror.exists():
+                    logger.info("ensure_mirror: mirror created by concurrent task %s/%s", job, alias)
+                    return mirror
                 raise RepoManagerError(
                     f"git clone failed for {job}/{alias}: {result.stderr[:300]}"
                 )

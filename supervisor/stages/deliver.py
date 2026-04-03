@@ -64,13 +64,16 @@ async def _run_ci_and_push(
 
     # 2. Git add + commit
     try:
-        exec_fn(["git", "add", "."], cwd=wt_path, timeout=60)
+        add_out, add_err, add_rc = exec_fn(["git", "add", "."], cwd=wt_path, timeout=60)
+        if add_rc != 0:
+            logger.warning("_run_ci_and_push: git add failed task_id=%s rc=%d stderr=%s", task_id, add_rc, add_err[:200])
         _out, _err, rc = exec_fn(
             ["git", "commit", "-m", f"ai: task {task_id[:8]} — auto-commit"],
             cwd=wt_path,
             timeout=60,
         )
         if rc != 0:
+            logger.warning("_run_ci_and_push: git commit rc=%d task_id=%s stdout=%s stderr=%s", rc, task_id, _out[:200], _err[:200])
             # Nothing to commit is OK (rc=1 with "nothing to commit")
             if "nothing to commit" not in _out and "nothing to commit" not in _err:
                 return False, f"git commit failed (rc={rc}): {_err[:200]}"
