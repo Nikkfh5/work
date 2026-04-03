@@ -33,7 +33,9 @@ ACQUIRABLE_STATUSES = ("pending", "blocked")
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "pending": {"running"},
     "pending_approval": {"pending", "rejected"},
-    "running": {"done", "blocked", "error", "requires_manual"},
+    "planning": {"plan_review", "error"},
+    "plan_review": {"planning", "pending", "cancelled"},
+    "running": {"done", "blocked", "error", "requires_manual", "planning"},
     "blocked": {"running"},
     "requires_manual": {"running", "cancelled"},
     # terminal

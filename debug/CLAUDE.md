@@ -32,14 +32,33 @@
 | Компонент | Статус | Заметки |
 |-----------|--------|---------|
 | Config validation | ✅ Работает | `agents.yaml` проходит валидацию |
-| DB init + migrations | ✅ Работает | 15 миграций, все применяются |
+| DB init + migrations | ✅ Работает | 18 миграций (complexity, plan_text, plan_revision) |
 | TG bot polling | ✅ Подключается | `@work_aitool_bot`, long polling 30s |
 | Email polling | ❌ IMAP fail | Gmail credentials не настроены — ИГНОРИРОВАТЬ |
 | Router | ✅ 1 worker | `@voidnyan` → `job1_worker` |
 | Dispatcher | ✅ Запускается | Проверяет pending tasks каждые 30s |
-| Worker pipeline | ⚠️ НЕ ТЕСТИРОВАН | Stages: prepare → execute → review → deliver |
+| Worker pipeline | ✅ Работает | prepare → [planning] → execute → review → deliver |
+| Planning pipeline | ✅ Реализован | clarify → classify → plan → TG approve → execute |
+| CI auto-fix | ✅ Реализован | CI fail → worker fix → retry (до 3 попыток) |
+| Persistent completion | ✅ Реализован | review exhausted → auto-retry (blocked → re-dispatch) |
+| Explorer mode | ✅ Реализован | is_explorer: true → read-only промпт → report в TG |
+| Team runtime | ✅ Реализован | decompose_plan → parallel subtasks → merge |
 | Claude CLI | ✅ Работает | `claude --print "test"` отвечает |
-| Тесты | ✅ 290 passed | Но нет E2E с реальным Claude CLI |
+| Тесты | ✅ 377 passed | Unit + integration, 0 failed |
+
+### Новые TG-команды
+| Команда | Что делает |
+|---------|-----------|
+| `/plan <id>` | Показать текущий план задачи |
+| `/revise <id> <feedback>` | Отправить план на доработку с комментариями |
+| `/approve <id>` | Одобрить план ИЛИ задачу |
+| `/reject <id>` | Отклонить план ИЛИ задачу |
+
+### Новые статусы задач
+| Статус | Значение |
+|--------|----------|
+| `planning` | Агент создаёт план |
+| `plan_review` | План отправлен в TG, ждём approve/revise/reject |
 
 ---
 
@@ -439,19 +458,75 @@ with get_conn('data/orchestrator.db') as c:
 
 ---
 
-## Режим автопилота
+## Boss Mode — самоулучшающаяся debug система
 
-Когда всё работает стабильно, запусти автономный цикл:
+`debug/boss.py` — автономный "босс-тестировщик" (вдохновлен Gas Town):
+
+```bash
+# Полный цикл: генерация → инжекция → мониторинг → анализ → предложения
+python debug/boss.py run
+
+# Фокус на конкретной фиче
+python debug/boss.py run --focus planning      # planning pipeline
+python debug/boss.py run --focus clarification # расплывчатые задачи
+python debug/boss.py run --focus security      # edge cases
+python debug/boss.py run --focus ci_autofix    # CI auto-fix
+
+# Анализ без инжекции
+python debug/boss.py analyze
+
+# Какие фичи протестированы
+python debug/boss.py coverage
+
+# Текущие предложения по улучшению
+python debug/boss.py proposals
+```
+
+### Self-improving loop
+```
+1. Boss читает findings.md (прошлые результаты)
+2. Boss читает proposals.md (предложения)
+3. Выбирает непротестированные фичи
+4. Генерирует задачи разного уровня сложности
+5. Инжектирует в DB → supervisor обрабатывает
+6. Мониторит до завершения (таймаут 10 мин)
+7. Анализирует результаты → записывает findings.md
+8. Генерирует предложения → proposals.md
+9. На следующем запуске → читает и учитывает
+```
+
+### Файлы босса
+| Файл | Назначение |
+|------|-----------|
+| `debug/boss.py` | Основной скрипт — генерация, мониторинг, анализ |
+| `debug/findings.md` | Append-only лог находок (что работает, что нет) |
+| `debug/proposals.md` | Предложения по улучшению (генерируются автоматически) |
+| `debug/experiments.md` | Ручной лог экспериментов (исторический) |
+| `debug/inject_task.py` | Ручной Swiss Army Knife (инжекция, статус, логи) |
+
+### Фичи для тестирования (palettes)
+| Feature | Что тестирует |
+|---------|-------------|
+| `basic_worker` | Базовый pipeline: worker создаёт файлы |
+| `review_cycle` | Worker + reviewer: APPROVED vs NEEDS_CHANGES |
+| `planning` | Planning pipeline: classify → plan → TG approve |
+| `clarification` | Расплывчатые задачи → уточняющие вопросы |
+| `explorer` | Read-only анализ репозитория |
+| `ci_autofix` | CI auto-fix loop |
+| `persistent_completion` | Auto-retry при review exhausted |
+| `security` | SQL injection, fake markers, Unicode, длинные описания |
+| `team_runtime` | Параллельное выполнение подзадач |
+
+## Режим автопилота (legacy)
 
 ```
 1. Запусти supervisor
-2. Сгенерируй 3 задачи разной сложности (через Claude CLI)
-3. Инжектируй их в DB
-4. Жди 5-10 минут
-5. Проверь статусы: все done? Есть blocked/error?
-6. Если есть ошибки → диагностируй → фикси → повтори
-7. Если всё green → усложняй задачи (реальные репо, CI, review)
-8. Записывай каждый прогон в experiments.md
+2. python debug/boss.py run --batch 3
+3. Жди 10 минут
+4. python debug/boss.py analyze
+5. python debug/boss.py proposals
+6. Исправь найденные проблемы
+7. Повтори
 ```
 
-**Цель:** дойти до уровня когда система стабильно выполняет задачи уровня 3 (с git) без вмешательства.
+**Цель:** дойти до уровня когда система стабильно выполняет задачи всех уровней без вмешательства.

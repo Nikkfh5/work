@@ -19,9 +19,12 @@ Review cycle:
 """
 
 import asyncio
+import json
 import logging
 from typing import Optional
 
+from storage.db import get_conn
+from supervisor.cost_tracker import run_claude_tracked
 from supervisor.lease_manager import release_lease
 from supervisor.pipeline import (
     E_JSON_SCHEMA,
@@ -228,9 +231,13 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
 
         # Run reviewer
         try:
-            reviewer_stdout = await runner(
-                reviewer_prompt, cwd=reviewer_dir, timeout=ctx.worker_timeout
+            reviewer_stdout, reviewer_metrics = await run_claude_tracked(
+                reviewer_prompt, cwd=reviewer_dir, timeout=ctx.worker_timeout, runner=runner
             )
+            ctx.cumulative_cost_usd += reviewer_metrics.get("cost_usd", 0)
+            ctx.cumulative_input_tokens += reviewer_metrics.get("input_tokens", 0)
+            ctx.cumulative_output_tokens += reviewer_metrics.get("output_tokens", 0)
+            ctx.cumulative_elapsed_ms += reviewer_metrics.get("elapsed_ms", 0)
         except (ClaudeRunnerError, asyncio.TimeoutError) as exc:
             logger.error(
                 "review_stage: reviewer error task_id=%s: %s", ctx.task_id, exc
@@ -264,6 +271,7 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             worker_id=reviewer_id,
             db_path=ctx.db_path,
             returncode=0,
+            metrics=reviewer_metrics,
         )
 
         if not reviewer_valid:
@@ -302,6 +310,37 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
         # NEEDS_CHANGES — retry worker
         is_last = iteration == max_iterations
         if is_last:
+            # Save accumulated progress for potential retry
+            _save_partial_progress(ctx, current_worker_result, reviewer_parsed)
+
+            # Check if persistent completion is enabled
+            persistent_enabled = ctx.worker_cfg.get("persistent_completion", False)
+            max_total_attempts = int(ctx.worker_cfg.get("max_total_review_cycles", 2))
+
+            # Read current review cycle count from DB
+            current_cycle = _get_review_cycle(ctx.task_id, ctx.db_path)
+
+            if persistent_enabled and current_cycle < max_total_attempts:
+                # Auto-retry: release lease as blocked, will be re-dispatched
+                _increment_review_cycle(ctx.task_id, ctx.db_path)
+                release_lease(
+                    ctx.task_id, ctx.worker_id, ctx.token, "blocked",
+                    db_path=ctx.db_path,
+                )
+                ctx.emit(
+                    "review_needs_changes",
+                    iteration=iteration,
+                    feedback=f"Auto-retry cycle {current_cycle + 1}/{max_total_attempts}. "
+                             f"Previous feedback: {reviewer_parsed.get('feedback', '')[:200]}",
+                )
+                logger.info(
+                    "review_stage: persistent retry task_id=%s cycle=%d/%d",
+                    ctx.task_id, current_cycle + 1, max_total_attempts,
+                )
+                ctx.worker_status = "_review_handled"
+                return
+
+            # Truly exhausted — requires_manual
             _fail_final(
                 ctx.task_id,
                 ctx.worker_id,
@@ -314,13 +353,12 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
                 "task_failed",
                 reason="review_exhausted",
                 message=(
-                    f"review exhausted ({max_iterations} iterations).\n{feedback[:200]}"
+                    f"review exhausted ({max_iterations} iterations x {current_cycle + 1} cycles).\n{feedback[:200]}"
                 ),
             )
             logger.warning(
-                "review_stage: exhausted task_id=%s iterations=%d",
-                ctx.task_id,
-                max_iterations,
+                "review_stage: exhausted task_id=%s iterations=%d cycles=%d",
+                ctx.task_id, max_iterations, current_cycle + 1,
             )
             ctx.worker_status = "_review_handled"
             return
@@ -342,9 +380,13 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
         )
 
         try:
-            worker_stdout = await runner(
-                retry_prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout
+            worker_stdout, worker_metrics = await run_claude_tracked(
+                retry_prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout, runner=runner
             )
+            ctx.cumulative_cost_usd += worker_metrics.get("cost_usd", 0)
+            ctx.cumulative_input_tokens += worker_metrics.get("input_tokens", 0)
+            ctx.cumulative_output_tokens += worker_metrics.get("output_tokens", 0)
+            ctx.cumulative_elapsed_ms += worker_metrics.get("elapsed_ms", 0)
         except (ClaudeRunnerError, asyncio.TimeoutError) as exc:
             logger.error(
                 "review_stage: worker retry error task_id=%s: %s",
@@ -380,6 +422,7 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             worker_id=ctx.worker_id,
             db_path=ctx.db_path,
             returncode=0,
+            metrics=worker_metrics,
         )
 
         if not worker_valid:
@@ -401,6 +444,50 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
 
         # Update current result for next review iteration
         current_worker_result = worker_parsed.get("result", {})
+
+
+def _save_partial_progress(ctx: WorkerContext, worker_result: dict, reviewer_parsed: dict) -> None:
+    """Save accumulated progress from review cycle in partial_result for potential retry."""
+    progress = {
+        "last_worker_notes": worker_result.get("notes", ""),
+        "last_reviewer_feedback": reviewer_parsed.get("feedback", ""),
+        "last_reviewer_issues": reviewer_parsed.get("issues", []),
+    }
+
+    try:
+        with get_conn(ctx.db_path) as conn:
+            conn.execute(
+                "UPDATE tasks SET partial_result=?, updated_at=datetime('now') WHERE id=?",
+                (json.dumps(progress, ensure_ascii=False), ctx.task_id),
+            )
+    except Exception as exc:
+        logger.warning("_save_partial_progress failed task_id=%s: %s", ctx.task_id, exc)
+
+
+def _get_review_cycle(task_id: str, db_path=None) -> int:
+    """Get current review cycle count from review_iteration field in DB."""
+    try:
+        with get_conn(db_path) as conn:
+            row = conn.execute(
+                "SELECT review_iteration FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+        return row["review_iteration"] if row else 0
+    except Exception:
+        return 0
+
+
+def _increment_review_cycle(task_id: str, db_path=None) -> None:
+    """Increment review_iteration counter in DB."""
+    try:
+        with get_conn(db_path) as conn:
+            conn.execute(
+                "UPDATE tasks SET review_iteration=review_iteration+1, "
+                "updated_at=datetime('now') WHERE id=?",
+                (task_id,),
+            )
+    except Exception as exc:
+        logger.warning("_increment_review_cycle failed task_id=%s: %s", task_id, exc)
 
 
 async def review_stage(ctx: WorkerContext) -> None:

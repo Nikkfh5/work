@@ -40,6 +40,7 @@ def log_run(
     logs_dir: Optional[str] = None,
     now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     worker_id: str = "worker",
+    metrics: Optional[dict] = None,
 ) -> tuple[str, str]:
     """
     Записать stdout/stderr агента в файлы и создать запись в task_runs.
@@ -58,6 +59,7 @@ def log_run(
         logs_dir:    директория для лог-файлов (None → "logs/")
         now_fn:      функция текущего времени (для тестов)
         worker_id:   ID воркера (для имени файла)
+        metrics:     cost/token metrics from cost_tracker (optional)
 
     Returns:
         Кортеж (stdout_path, stderr_path) — пути к файлам логов.
@@ -109,14 +111,27 @@ def log_run(
     parsed_json_str = json.dumps(parsed_json) if parsed_json is not None else None
     json_valid_int = 1 if json_valid else 0
 
+    # Extract metrics if provided
+    m = metrics or {}
+    elapsed_ms = m.get("elapsed_ms")
+    api_elapsed_ms = m.get("api_elapsed_ms")
+    input_tokens = m.get("input_tokens")
+    output_tokens = m.get("output_tokens")
+    cache_creation_tokens = m.get("cache_creation_tokens")
+    cache_read_tokens = m.get("cache_read_tokens")
+    cost_usd = m.get("cost_usd")
+    model_id = m.get("model_id")
+
     try:
         with get_conn(db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO task_runs
                     (task_id, phase, attempt, started_at, finished_at,
-                     returncode, stdout_path, stderr_path, parsed_json, json_valid)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     returncode, stdout_path, stderr_path, parsed_json, json_valid,
+                     elapsed_ms, api_elapsed_ms, input_tokens, output_tokens,
+                     cache_creation_tokens, cache_read_tokens, cost_usd, model_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -129,6 +144,14 @@ def log_run(
                     stderr_path,
                     parsed_json_str,
                     json_valid_int,
+                    elapsed_ms,
+                    api_elapsed_ms,
+                    input_tokens,
+                    output_tokens,
+                    cache_creation_tokens,
+                    cache_read_tokens,
+                    cost_usd,
+                    model_id,
                 ),
             )
         logger.debug(

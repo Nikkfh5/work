@@ -56,6 +56,7 @@ from supervisor.stages.review import (
     review_stage,
 )
 from supervisor.stages.deliver import deliver_stage
+from supervisor.stages.planning import planning_stage
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,10 @@ async def run_worker_cycle(
     job = _worker_to_job(worker_id)
     branching = worker_cfg.get("branching_policy", {})
 
+    # Planning config
+    planning_cfg = config.get("supervisor", {}).get("planning", {})
+    planning_enabled = planning_cfg.get("enabled", False)
+
     ctx = WorkerContext(
         task_id=task["id"],
         worker_id=worker_id,
@@ -258,13 +263,21 @@ async def run_worker_cycle(
                 config.get("supervisor", {}).get("confidence_threshold", 70),
             )
         ),
+        planning_enabled=planning_enabled,
+        planning_config=planning_cfg,
     )
 
     logger.info(
         "run_worker_cycle: start task_id=%s worker=%s", ctx.task_id, ctx.worker_id
     )
 
-    await run_pipeline(ctx, [prepare_stage, execute_stage, review_stage, deliver_stage])
+    # Build stage list: conditionally insert planning_stage
+    stages = [prepare_stage]
+    if planning_enabled:
+        stages.append(planning_stage)
+    stages.extend([execute_stage, review_stage, deliver_stage])
+
+    await run_pipeline(ctx, stages)
 
 
 # ── Scheduled tasks ───────────────────────────────────────────────────────────

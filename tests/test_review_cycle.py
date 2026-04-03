@@ -12,6 +12,8 @@ tests/test_review_cycle.py — тесты для review iteration flow.
 - Reviewer invalid JSON → requires_manual
 """
 
+import json
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -572,3 +574,238 @@ async def test_ci_and_push_ci_fails(mock_repo_manager):
 
     assert success is False
     assert "CI failed" in err
+
+
+# ── Persistent Completion Loop ───────────────────────────────────────────────
+
+
+def _config_with_persistent_completion(
+    persistent_completion=True, max_total_review_cycles=2, max_review_iterations=3
+):
+    """Config with reviewer + persistent_completion enabled."""
+    return {
+        "supervisor": {"confidence_threshold": 70},
+        "workers": {
+            "job1_worker": {
+                "max_attempts": 1,
+                "reviewer_id": "job1_reviewer",
+                "max_review_iterations": max_review_iterations,
+                "persistent_completion": persistent_completion,
+                "max_total_review_cycles": max_total_review_cycles,
+                "repos": [
+                    {
+                        "alias": "api",
+                        "url": "https://github.com/org/api",
+                        "token_env": "GIT_TOKEN_JOB1",
+                        "clone_strategy": "shallow",
+                    }
+                ],
+                "branching_policy": {
+                    "pattern": "ai/task-{task_id}",
+                    "base": "main",
+                },
+                "ci_policy": {
+                    "run_before_push": [["pytest"]],
+                    "required_pass": True,
+                },
+                "style_policy": {
+                    "formatters": [],
+                    "run_before_commit": False,
+                },
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_persistent_completion_auto_retry(
+    db_path, mock_tg_handler, mock_repo_manager
+):
+    """Review exhausted but persistent_completion=True and cycle < max -> releases as blocked."""
+    from supervisor.main import run_worker_cycle
+
+    task = _make_task(db_path)
+    config = _config_with_persistent_completion(
+        persistent_completion=True, max_total_review_cycles=2, max_review_iterations=3
+    )
+
+    call_count = 0
+
+    async def mock_run_claude(prompt, cwd=None, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # Initial worker
+            return WORKER_DONE_JSON
+        elif call_count % 2 == 0:
+            # Reviewers always NEEDS_CHANGES
+            return _reviewer_needs_changes_json()
+        else:
+            # Worker retries
+            return WORKER_DONE_JSON
+
+    with (
+        patch(
+            "supervisor.claude_runner.run_claude",
+            AsyncMock(side_effect=mock_run_claude),
+        ),
+        patch("supervisor.stages.deliver.safe_exec", return_value=("", "", 0)),
+    ):
+        await run_worker_cycle(
+            task, config, mock_tg_handler, db_path, mock_repo_manager
+        )
+
+    # Task should be blocked (auto-retry), NOT requires_manual
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT status, review_iteration FROM tasks WHERE id=?", (task["id"],)
+        ).fetchone()
+    assert row["status"] == "blocked"
+    assert row["review_iteration"] == 1  # incremented from 0 to 1
+
+
+@pytest.mark.asyncio
+async def test_persistent_completion_fully_exhausted(
+    db_path, mock_tg_handler, mock_repo_manager
+):
+    """persistent_completion=True but cycle >= max -> requires_manual."""
+    from supervisor.main import run_worker_cycle
+
+    task = _make_task(db_path)
+    config = _config_with_persistent_completion(
+        persistent_completion=True, max_total_review_cycles=1, max_review_iterations=3
+    )
+
+    # Pre-set review_iteration to the max so it's already exhausted
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE tasks SET review_iteration=1 WHERE id=?", (task["id"],)
+        )
+
+    call_count = 0
+
+    async def mock_run_claude(prompt, cwd=None, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return WORKER_DONE_JSON
+        elif call_count % 2 == 0:
+            return _reviewer_needs_changes_json()
+        else:
+            return WORKER_DONE_JSON
+
+    with (
+        patch(
+            "supervisor.claude_runner.run_claude",
+            AsyncMock(side_effect=mock_run_claude),
+        ),
+        patch("supervisor.stages.deliver.safe_exec", return_value=("", "", 0)),
+    ):
+        await run_worker_cycle(
+            task, config, mock_tg_handler, db_path, mock_repo_manager
+        )
+
+    # Task should be requires_manual — all cycles exhausted
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT status, last_error_reason FROM tasks WHERE id=?", (task["id"],)
+        ).fetchone()
+    assert row["status"] == "requires_manual"
+    assert row["last_error_reason"] == "review_exhausted"
+
+    # TG notification mentions exhausted + cycles
+    mock_tg_handler.notify_owner.assert_called()
+    last_msg = mock_tg_handler.notify_owner.call_args[0][0]
+    assert "exhausted" in last_msg or "cycles" in last_msg
+
+
+@pytest.mark.asyncio
+async def test_persistent_completion_disabled(
+    db_path, mock_tg_handler, mock_repo_manager
+):
+    """persistent_completion=False (default) -> normal requires_manual on exhaustion."""
+    from supervisor.main import run_worker_cycle
+
+    task = _make_task(db_path)
+    # Use the standard config WITHOUT persistent_completion
+    config = _config_with_reviewer()
+
+    call_count = 0
+
+    async def mock_run_claude(prompt, cwd=None, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return WORKER_DONE_JSON
+        elif call_count % 2 == 0:
+            return _reviewer_needs_changes_json()
+        else:
+            return WORKER_DONE_JSON
+
+    with (
+        patch(
+            "supervisor.claude_runner.run_claude",
+            AsyncMock(side_effect=mock_run_claude),
+        ),
+        patch("supervisor.stages.deliver.safe_exec", return_value=("", "", 0)),
+    ):
+        await run_worker_cycle(
+            task, config, mock_tg_handler, db_path, mock_repo_manager
+        )
+
+    # Task should be requires_manual — persistent_completion not enabled
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id=?", (task["id"],)
+        ).fetchone()
+    assert row["status"] == "requires_manual"
+
+
+@pytest.mark.asyncio
+async def test_partial_progress_saved(
+    db_path, mock_tg_handler, mock_repo_manager
+):
+    """Verify partial_result is saved with reviewer feedback on exhaustion."""
+    from supervisor.main import run_worker_cycle
+
+    task = _make_task(db_path)
+    config = _config_with_persistent_completion(
+        persistent_completion=True, max_total_review_cycles=2, max_review_iterations=3
+    )
+
+    call_count = 0
+
+    async def mock_run_claude(prompt, cwd=None, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return WORKER_DONE_JSON
+        elif call_count % 2 == 0:
+            return _reviewer_needs_changes_json()
+        else:
+            return WORKER_DONE_JSON
+
+    with (
+        patch(
+            "supervisor.claude_runner.run_claude",
+            AsyncMock(side_effect=mock_run_claude),
+        ),
+        patch("supervisor.stages.deliver.safe_exec", return_value=("", "", 0)),
+    ):
+        await run_worker_cycle(
+            task, config, mock_tg_handler, db_path, mock_repo_manager
+        )
+
+    # Check partial_result was saved
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT partial_result FROM tasks WHERE id=?", (task["id"],)
+        ).fetchone()
+
+    assert row["partial_result"] is not None
+    progress = json.loads(row["partial_result"])
+    assert "last_reviewer_feedback" in progress
+    assert progress["last_reviewer_feedback"] == "Fix the bug"
+    assert "last_reviewer_issues" in progress
+    assert len(progress["last_reviewer_issues"]) == 1
+    assert progress["last_reviewer_issues"][0]["message"] == "Missing null check"

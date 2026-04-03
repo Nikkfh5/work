@@ -1,0 +1,23 @@
+rules:
+  - id: no-log-content-in-db
+    languages: [python]
+    severity: HIGH
+    message: >
+      Only log file paths should be stored in DB, not log content strings (Invariant #7).
+      Use run_logger to write content to files, then store the file path in DB.
+    mode: taint
+    pattern-sources:
+      - pattern: $X.stdout
+      - pattern: $X.stderr
+    pattern-sinks:
+      - pattern: $DB.execute("INSERT ...", ...)
+      - pattern: $DB.execute("UPDATE ...", ...)
+    pattern-sanitizers:
+      - pattern: redact(...)
+      - pattern: write_log_file(...)
+    metadata:
+      category: security
+      confidence: MEDIUM
+      impact: HIGH
+      invariant: "7"
+      description: "Invariant #7: In DB only paths to logs, not the strings themselves"

@@ -18,6 +18,7 @@ import asyncio
 import logging
 from typing import Optional
 
+from supervisor.cost_tracker import run_claude_tracked
 from supervisor.pipeline import (
     E_JSON_INVALID,
     E_JSON_SCHEMA,
@@ -25,6 +26,14 @@ from supervisor.pipeline import (
     E_WORKER_CRASH,
     WorkerContext,
     _fail_final,
+)
+from supervisor.session_manager import (
+    build_resumed_prompt,
+    extract_progress_summary,
+    load_checkpoint,
+    mark_resumed,
+    save_checkpoint,
+    should_refresh_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,11 +44,13 @@ def _build_worker_prompt(
     task_id: str = "",
     repos_context: Optional[list[dict]] = None,
     branch: str = "",
+    plan_text: str = "",
 ) -> str:
     """
     Собрать полный промпт для воркера: задание + workspace context + JSON-вывод.
 
     repos_context: [{"alias": "api", "path": "workspace/{task_id}/api"}]
+    plan_text: утверждённый план в JSON-формате (из planning_stage)
     """
     # Контекст рабочей директории
     workspace_section = ""
@@ -50,10 +61,22 @@ def _build_worker_prompt(
         lines.append("Работай ТОЛЬКО в этих директориях. Не выходи за их пределы.")
         workspace_section = "\n".join(lines) + "\n\n"
 
+    # Утверждённый план
+    plan_section = ""
+    if plan_text:
+        plan_section = (
+            "--- УТВЕРЖДЁННЫЙ ПЛАН ---\n"
+            f"{plan_text}\n"
+            "--- КОНЕЦ ПЛАНА ---\n\n"
+            "Следуй утверждённому плану. Выполняй шаги последовательно.\n\n"
+        )
+
     return f"""\
 Задание от супервайзора:
 
 {description}
+
+{plan_section}
 
 ─────────────────────────────────────────────
 {workspace_section}ОБЯЗАТЕЛЬНО: после выполнения задания выведи результат СТРОГО в этом формате
@@ -109,6 +132,52 @@ def _build_json_correction_prompt(previous_output: str) -> str:
 """
 
 
+def _build_explorer_prompt(
+    description: str,
+    task_id: str = "",
+    repos_context: Optional[list[dict]] = None,
+) -> str:
+    """
+    Промпт для explorer (read-only агента): только анализ, без изменений файлов.
+
+    Explorer не пишет код, а возвращает отчёт/ответ.
+    """
+    workspace_section = ""
+    if repos_context:
+        lines = [f"Task ID: {task_id}", "Репозитории (read-only):"]
+        for repo in repos_context:
+            lines.append(f"  - {repo['alias']}: {repo['path']}")
+        lines.append("Ты можешь ТОЛЬКО ЧИТАТЬ файлы. НЕ изменяй ничего.")
+        workspace_section = "\n".join(lines) + "\n\n"
+
+    return f"""\
+Ты — explorer-агент (read-only). Твоя задача — ИССЛЕДОВАТЬ и ОТВЕТИТЬ, \
+не меняя код.
+
+Задание:
+{description}
+
+─────────────────────────────────────────────
+{workspace_section}Исследуй репозиторий и дай подробный ответ на вопрос/задание.
+
+ОБЯЗАТЕЛЬНО: выведи результат СТРОГО в этом формате:
+
+<<<JSON>>>
+{{
+  "status": "done",
+  "confidence": <0-100>,
+  "result": {{
+    "repos": [],
+    "notes": "<подробный ответ/отчёт>"
+  }},
+  "question": null
+}}
+<<<END>>>
+
+Если нужно уточнение — используй status "blocked" и заполни "question".
+"""
+
+
 async def execute_stage(ctx: WorkerContext) -> None:
     """
     Retry loop: до max_attempts попыток запуска claude CLI.
@@ -125,6 +194,13 @@ async def execute_stage(ctx: WorkerContext) -> None:
 
     last_stdout = ""
     use_correction = False
+    is_explorer = ctx.worker_cfg.get("is_explorer", False)
+
+    # Check for existing checkpoint (session resumed)
+    checkpoint = load_checkpoint(ctx.task_id, ctx.db_path)
+    if checkpoint:
+        logger.info("execute_stage: resuming from checkpoint task_id=%s", ctx.task_id)
+        mark_resumed(checkpoint["id"], ctx.db_path)
 
     for attempt in range(1, ctx.max_attempts + 1):
         is_last = attempt == ctx.max_attempts
@@ -138,20 +214,38 @@ async def execute_stage(ctx: WorkerContext) -> None:
         # Промпт: json_invalid -> коррекционный, иначе полный
         if use_correction and last_stdout:
             prompt = _build_json_correction_prompt(last_stdout)
+        elif checkpoint and attempt == 1:
+            prompt = build_resumed_prompt(
+                ctx.task_description,
+                checkpoint,
+                plan_text=ctx.plan_text,
+            )
+        elif is_explorer:
+            prompt = _build_explorer_prompt(
+                ctx.task_description,
+                task_id=ctx.task_id,
+                repos_context=ctx.repos_context,
+            )
         else:
             prompt = _build_worker_prompt(
                 ctx.task_description,
                 task_id=ctx.task_id,
                 repos_context=ctx.repos_context,
                 branch=ctx.branch,
+                plan_text=ctx.plan_text,
             )
         use_correction = False
 
         # Запустить claude CLI
         try:
-            stdout = await runner(
-                prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout
+            stdout, metrics = await run_claude_tracked(
+                prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout, runner=runner
             )
+            # Accumulate cost metrics
+            ctx.cumulative_cost_usd += metrics.get("cost_usd", 0)
+            ctx.cumulative_input_tokens += metrics.get("input_tokens", 0)
+            ctx.cumulative_output_tokens += metrics.get("output_tokens", 0)
+            ctx.cumulative_elapsed_ms += metrics.get("elapsed_ms", 0)
             last_stdout = stdout
         except asyncio.TimeoutError:
             logger.error(
@@ -207,6 +301,28 @@ async def execute_stage(ctx: WorkerContext) -> None:
             await asyncio.sleep(ctx.retry_delay)
             continue
 
+        # Check if session needs refresh
+        if should_refresh_session(metrics):
+            progress = extract_progress_summary(stdout)
+            save_checkpoint(
+                ctx.task_id, ctx.worker_id, "worker", attempt,
+                metrics, progress, db_path=ctx.db_path,
+            )
+            from supervisor.lease_manager import release_lease
+
+            release_lease(ctx.task_id, ctx.worker_id, ctx.token, "blocked", db_path=ctx.db_path)
+            ctx.emit(
+                "session_refresh",
+                tokens=metrics.get("input_tokens", 0),
+                cost=metrics.get("cost_usd", 0),
+            )
+            ctx.worker_status = "_session_refresh"
+            logger.warning(
+                "execute_stage: session refresh needed task_id=%s tokens=%d",
+                ctx.task_id, metrics.get("input_tokens", 0),
+            )
+            return
+
         # Парсим и валидируем JSON
         parsed = extract_json(stdout)
         valid, err = validate_worker_schema(parsed) if parsed else (False, "no JSON")
@@ -221,6 +337,7 @@ async def execute_stage(ctx: WorkerContext) -> None:
             worker_id=ctx.worker_id,
             db_path=ctx.db_path,
             returncode=0,  # runner raises on non-zero, so success = 0
+            metrics=metrics,
         )
 
         if not valid:

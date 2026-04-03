@@ -8,12 +8,14 @@ Adding a new channel (Slack, webhook, etc.) requires changes only here,
 not in every stage file.
 
 Event types:
-  task_done           -- task completed (confidence, notes)
+  task_done           -- task completed (confidence, notes, cost_usd)
   task_failed         -- task failed (reason, message)
   task_blocked        -- task blocked, needs human input (question)
   review_approved     -- reviewer approved the result (message)
   review_needs_changes -- reviewer requested changes (iteration, feedback)
   escalation_created  -- escalation created (question)
+  ci_auto_fix         -- CI failed, auto-fix attempt in progress (attempt, error)
+  session_refresh     -- session approaching context limit (tokens, cost)
 """
 
 import logging
@@ -39,8 +41,10 @@ async def _dispatch_event(ctx: "WorkerContext", event: dict) -> None:
     if event_type == "task_done":
         confidence = data.get("confidence", "?")
         notes = data.get("notes", "")
+        cost = data.get("cost_usd", 0)
+        cost_str = f" ${cost:.4f}" if cost > 0 else ""
         await ctx.tg_handler.notify_owner(
-            f"task#{ctx.task_id[:8]}: DONE \u2713 (confidence={confidence})\n"
+            f"task#{ctx.task_id[:8]}: DONE \u2713 (confidence={confidence}){cost_str}\n"
             f"{str(notes)[:200]}"
         )
 
@@ -76,6 +80,37 @@ async def _dispatch_event(ctx: "WorkerContext", event: dict) -> None:
             f"task#{ctx.task_id[:8]}: \u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044f "
             f"\u043f\u043e\u043c\u043e\u0449\u044c. {str(question)[:200]}\n"
             f"\u041f\u043e\u0432\u0442\u043e\u0440\u0438: /retry {ctx.task_id[:8]}"
+        )
+
+    elif event_type == "ci_auto_fix":
+        attempt = data.get("attempt", "?")
+        error = data.get("error", "")
+        await ctx.tg_handler.notify_owner(
+            f"task#{ctx.task_id[:8]}: CI failed, auto-fixing (attempt {attempt})...\n"
+            f"{str(error)[:200]}"
+        )
+
+    elif event_type == "plan_created":
+        plan_text = data.get("plan_text", "")
+        await ctx.tg_handler.notify_owner(plan_text)
+
+    elif event_type == "plan_approved":
+        await ctx.tg_handler.notify_owner(
+            f"task#{ctx.task_id[:8]}: Plan approved. Proceeding to execution."
+        )
+
+    elif event_type == "plan_revision_requested":
+        revision = data.get("revision", "?")
+        await ctx.tg_handler.notify_owner(
+            f"task#{ctx.task_id[:8]}: Revising plan (revision {revision})..."
+        )
+
+    elif event_type == "session_refresh":
+        tokens = data.get("tokens", 0)
+        cost = data.get("cost", 0)
+        await ctx.tg_handler.notify_owner(
+            f"task#{ctx.task_id[:8]}: Session refresh needed "
+            f"(tokens={tokens}, ${cost:.4f}). Restarting..."
         )
 
     else:

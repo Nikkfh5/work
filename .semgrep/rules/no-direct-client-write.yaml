@@ -1,0 +1,24 @@
+rules:
+  - id: no-direct-client-write-outside-supervisor
+    languages: [python]
+    severity: HIGH
+    message: >
+      Only supervisor can write to clients (Invariant #10).
+      TG/Email sending must only happen in supervisor/ or integrations/ modules,
+      not in workers or storage.
+    patterns:
+      - pattern-either:
+          - pattern: await $BOT.send_message(...)
+          - pattern: $BOT.send_message(...)
+          - pattern: $SMTP.send_message(...)
+          - pattern: $SMTP.sendmail(...)
+    paths:
+      include:
+        - "workers/"
+        - "storage/"
+    metadata:
+      category: security
+      confidence: HIGH
+      impact: MEDIUM
+      invariant: "10"
+      description: "Invariant #10: supervisor is the only one who writes to client (TG/Email)"

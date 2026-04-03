@@ -54,6 +54,9 @@ supervisor/run_logger.py     запись stdout/stderr в файлы + task_run
 supervisor/safe_exec.py      профильный allowlist-runner + realpath check
 supervisor/repo_manager.py   bare mirror + worktree + symlink per task
 supervisor/hooks/guard_bash  read-only Bash guard для воркеров
+supervisor/planner.py        planning engine: classify, clarify, create_plan, validate, format
+supervisor/stages/planning.py planning stage: clarify → complexity → plan → TG approval → poll
+supervisor/team_runtime.py   team runtime: decompose plan → parallel subtasks → merge results
 integrations/*_handler.py   только внешний транспорт (TG, Email, Notion)
 supervisor/main.py           asyncio orchestration, не бизнес-логика
 plans/conductor.md           автономный протокол дирижёра
@@ -71,6 +74,7 @@ plans/progress.md            трекер прогресса + backlog рефа�
 | 2 Worker | ✅ Done | worker CLAUDE.md/MCP/hooks, run_worker_cycle (worktree) |
 | 3 Review | ✅ Done | reviewer CLAUDE.md, итерации, ci → push |
 | 4 Escalation | ✅ Done | escalation.py (supervisor_reasoning, pending_approval) |
+| 4.5 Planning | ✅ Done | planner.py, stages/planning.py (classify → plan → TG approve) |
 | 5 Summarizer | ⏳ Next | daily digest в TG (только если были задачи). Notion убран → GraphRAG |
 | 6 Health | ⏳ | health_monitor.py, scheduler |
 | 7 Deploy | ⏳ | systemd service, deploy.sh, Makefile (без Docker) |
@@ -177,7 +181,7 @@ logger.error("lease_conflict task_id=%s worker=%s", task_id, worker_id)
 
 Запускать после каждого модуля:
 ```bash
-pytest tests/ -v        # 247 тестов, все зелёные
+pytest tests/ -v        # 377 тестов, все зелёные
 ruff check .            # линтинг
 ruff format --check .   # форматирование
 semgrep --metrics=off --config .semgrep/rules/ .  # проверка инвариантов

@@ -1,0 +1,26 @@
+rules:
+  - id: no-raw-stdout-in-logs
+    languages: [python]
+    severity: HIGH
+    message: >
+      Raw stdout/stderr must not be logged directly (Invariant #6).
+      All logs must go through redact(). Raw output only in files via run_logger.
+    patterns:
+      - pattern-either:
+          - pattern: logger.info(..., $X.stdout, ...)
+          - pattern: logger.warning(..., $X.stdout, ...)
+          - pattern: logger.error(..., $X.stdout, ...)
+          - pattern: logger.debug(..., $X.stdout, ...)
+          - pattern: logger.info(..., $X.stderr, ...)
+          - pattern: logger.warning(..., $X.stderr, ...)
+          - pattern: logger.error(..., $X.stderr, ...)
+          - pattern: logger.debug(..., $X.stderr, ...)
+      - pattern-not-inside: |
+          $Y = redact(...)
+          ...
+    metadata:
+      category: security
+      confidence: MEDIUM
+      impact: HIGH
+      invariant: "6"
+      description: "Invariant #6: All logs only through redact(), raw stdout/stderr only in files"

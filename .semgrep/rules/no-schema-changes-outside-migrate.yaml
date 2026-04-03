@@ -1,0 +1,30 @@
+rules:
+  - id: no-schema-changes-outside-migrate
+    languages: [python]
+    severity: CRITICAL
+    message: >
+      All schema changes must go through storage/migrate.py (Invariant #8).
+      Direct CREATE TABLE / ALTER TABLE / DROP TABLE outside of migrate.py is forbidden.
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $DB.execute("CREATE TABLE ...")
+          - pattern: |
+              $DB.execute("ALTER TABLE ...")
+          - pattern: |
+              $DB.execute("DROP TABLE ...")
+          - pattern-regex: "(?i)(CREATE|ALTER|DROP)\\s+TABLE"
+      - pattern-not-inside: |
+          # Allow in migrate.py and test files
+          def migrate(...):
+              ...
+    paths:
+      exclude:
+        - "storage/migrate.py"
+        - "tests/"
+    metadata:
+      category: maintainability
+      confidence: HIGH
+      impact: CRITICAL
+      invariant: "8"
+      description: "Invariant #8: All schema changes only through storage/migrate.py"

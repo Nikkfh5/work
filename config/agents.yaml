@@ -16,6 +16,27 @@ supervisor:
   context_supervisor_coverage: 0.6  # 60% контекста каждого воркера видит supervisor
   context_worker_coverage: 0.9      # 90% своего контекста видит воркер
 
+  # Planning-Approval Pipeline
+  planning:
+    enabled: true                     # активирован planning pipeline
+    complexity_threshold: 200         # длина описания задачи для "complex" (символы)
+    complexity_keywords:              # ключевые слова-триггеры сложности
+      - refactor
+      - migration
+      - redesign
+      - architecture
+      - security
+      - authentication
+      - database
+      - schema
+      - multi-file
+      - integration
+      - deploy
+      - infrastructure
+    max_revisions: 3                  # максимум ревизий плана
+    plan_timeout: 86400               # таймаут ожидания решения (24ч, секунды)
+    poll_interval: 10                 # интервал проверки DB (секунды)
+
 workers:
 
   # ── Health Monitor ────────────────────────────────────────────────────────
@@ -78,6 +99,19 @@ workers:
     is_reviewer: true
     reviews_for: job1_worker
     active: false                          # включить вместе с job1_worker
+    mcp:
+      required: ["context7"]
+      optional: []
+
+  # ── Explorer (read-only agent) ──────────────────────────────────────────
+  explorer:
+    model: claude-opus-4-6
+    is_explorer: true                      # read-only режим: только анализ, без записи
+    active: false                          # включить для read-only задач
+    max_attempts: 2
+    confidence_threshold: 50
+    delivery_policy:
+      mode: "report"                       # отчёт в TG, без push
     mcp:
       required: ["context7"]
       optional: []

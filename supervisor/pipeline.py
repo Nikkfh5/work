@@ -67,6 +67,19 @@ class WorkerContext:
     retry_delay: int = 30
     conf_threshold: int = 70
 
+    # Planning
+    complexity: str = ""  # "simple" | "complex" | ""
+    plan_text: str = ""  # structured plan JSON (stored in DB)
+    plan_revision: int = 0  # current plan revision number
+    planning_enabled: bool = False  # from config supervisor.planning.enabled
+    planning_config: dict = field(default_factory=dict)  # supervisor.planning section
+
+    # Cost tracking (accumulated across all runner calls in this pipeline)
+    cumulative_cost_usd: float = 0.0
+    cumulative_input_tokens: int = 0
+    cumulative_output_tokens: int = 0
+    cumulative_elapsed_ms: int = 0
+
     # Result
     parsed: Optional[dict] = None
     worker_status: str = ""
@@ -129,6 +142,19 @@ class ReviewExhausted(StageError):
 
 class CIFailed(StageError):
     """CI проверка или git push не прошли."""
+
+    pass
+
+
+class PlanRejected(StageError):
+    """Владелец отклонил план задачи."""
+
+    def __init__(self):
+        super().__init__(reason="plan_rejected", message="Plan rejected by owner.")
+
+
+class PlanningError(StageError):
+    """Ошибка при создании плана (super-agent не смог создать план)."""
 
     pass
 

@@ -141,6 +141,55 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             ON task_runs(task_id, phase, started_at)
         """,
     ),
+    (
+        16,
+        "Add complexity column to tasks",
+        "ALTER TABLE tasks ADD COLUMN complexity TEXT",
+    ),
+    (
+        17,
+        "Add plan_text column to tasks",
+        "ALTER TABLE tasks ADD COLUMN plan_text TEXT",
+    ),
+    (
+        18,
+        "Add plan_revision column to tasks",
+        "ALTER TABLE tasks ADD COLUMN plan_revision INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        19,
+        "Add cost metrics columns to task_runs",
+        """
+        ALTER TABLE task_runs ADD COLUMN elapsed_ms INTEGER;
+        ALTER TABLE task_runs ADD COLUMN api_elapsed_ms INTEGER;
+        ALTER TABLE task_runs ADD COLUMN input_tokens INTEGER;
+        ALTER TABLE task_runs ADD COLUMN output_tokens INTEGER;
+        ALTER TABLE task_runs ADD COLUMN cache_creation_tokens INTEGER;
+        ALTER TABLE task_runs ADD COLUMN cache_read_tokens INTEGER;
+        ALTER TABLE task_runs ADD COLUMN cost_usd REAL;
+        ALTER TABLE task_runs ADD COLUMN model_id TEXT
+        """,
+    ),
+    (
+        20,
+        "Create session_checkpoints table",
+        """
+        CREATE TABLE IF NOT EXISTS session_checkpoints (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id         TEXT NOT NULL REFERENCES tasks(id),
+            worker_id       TEXT NOT NULL,
+            phase           TEXT NOT NULL,
+            attempt         INTEGER,
+            checkpoint_at   DATETIME NOT NULL DEFAULT (datetime('now')),
+            input_tokens    INTEGER,
+            output_tokens   INTEGER,
+            cost_usd        REAL,
+            progress_summary TEXT,
+            saved_context    TEXT,
+            resumed          INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+    ),
 ]
 
 

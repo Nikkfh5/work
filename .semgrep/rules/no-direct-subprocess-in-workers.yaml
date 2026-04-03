@@ -1,0 +1,34 @@
+rules:
+  - id: no-direct-subprocess-in-workers
+    languages: [python]
+    severity: HIGH
+    message: >
+      Workers must not run commands directly (Invariant #4, #9).
+      Workers only read/write files + JSON stdout. Use safe_exec for any command execution.
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(...)
+          - pattern: subprocess.Popen(...)
+          - pattern: subprocess.call(...)
+          - pattern: subprocess.check_call(...)
+          - pattern: subprocess.check_output(...)
+          - pattern: asyncio.create_subprocess_exec(...)
+          - pattern: asyncio.create_subprocess_shell(...)
+      - pattern-not-inside: |
+          def safe_exec(...):
+              ...
+      - pattern-not-inside: |
+          def run_claude(...):
+              ...
+      - pattern-not-inside: |
+          def _run_git(...):
+              ...
+    paths:
+      include:
+        - "workers/"
+    metadata:
+      category: security
+      confidence: HIGH
+      impact: HIGH
+      invariant: "4,9"
+      description: "Invariant #4: Workers don't run commands; #9: read-only allowlist"

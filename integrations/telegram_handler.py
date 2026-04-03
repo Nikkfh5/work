@@ -189,6 +189,13 @@ class TelegramHandler:
             return await self._handle_retry(parts[1])
         elif cmd == "/cancel" and len(parts) >= 2:
             return await self._handle_cancel(parts[1])
+        elif cmd == "/plan" and len(parts) >= 2:
+            return await self._handle_plan(parts[1])
+        elif cmd == "/revise" and len(parts) >= 3:
+            feedback = " ".join(parts[2:])
+            return await self._handle_revise(parts[1], feedback)
+        elif cmd == "/revise" and len(parts) == 2:
+            return "Укажи фидбек: /revise <id> <комментарий>"
         elif cmd == "/summary":
             return "Дайджест: в разработке (Фаза 2)."
         else:
@@ -199,8 +206,10 @@ class TelegramHandler:
                 "/errors — задачи с ошибками\n"
                 "/retry <id> — повторить упавшую задачу\n"
                 "/cancel <id> — отменить задачу\n"
-                "/approve <id> — одобрить\n"
+                "/approve <id> — одобрить (задачу или план)\n"
                 "/reject <id> — отклонить\n"
+                "/plan <id> — посмотреть план\n"
+                "/revise <id> <фидбек> — доработать план\n"
                 "/summary — дайджест (Фаза 2)"
             )
 
@@ -212,7 +221,7 @@ class TelegramHandler:
                     """
                     SELECT id, status, assigned_worker, title, created_at
                     FROM tasks
-                    WHERE status IN ('pending', 'pending_approval', 'running', 'blocked')
+                    WHERE status IN ('pending', 'pending_approval', 'running', 'blocked', 'planning', 'plan_review')
                     ORDER BY created_at DESC LIMIT 10
                     """,
                 ).fetchall()
@@ -256,59 +265,100 @@ class TelegramHandler:
             return "Ошибка получения статуса."
 
     async def _handle_approve(self, task_id_prefix: str, note: str) -> str:
-        """Перевести задачу pending_approval/requires_manual → pending."""
+        """Перевести задачу pending_approval/requires_manual → pending, или одобрить план."""
         full_id = self._resolve_task_id(task_id_prefix)
         if not full_id:
             return f"Задача {task_id_prefix!r} не найдена."
 
         try:
             with get_conn(self._db_path) as conn:
-                result = conn.execute(
-                    "UPDATE tasks SET status='pending', last_error_reason=NULL, "
-                    "updated_at=datetime('now') "
-                    "WHERE id=? AND status IN ('pending_approval', 'requires_manual')",
-                    (full_id,),
-                )
-                changed = result.rowcount > 0
+                row = conn.execute(
+                    "SELECT status FROM tasks WHERE id=?", (full_id,)
+                ).fetchone()
+                if not row:
+                    return f"Задача #{task_id_prefix[:8]} не найдена."
 
-            if changed:
-                logger.info(
-                    "task_approved task_id=%s note=%s",
-                    full_id, redact(note[:80]) if note else "",
-                )
-                return f"✓ Задача #{task_id_prefix[:8]} одобрена и поставлена в очередь."
-            else:
-                return (
-                    f"Задача #{task_id_prefix[:8]} не в статусе "
-                    f"pending_approval/requires_manual."
-                )
+                status = row["status"]
+
+                if status == "plan_review":
+                    # Сигнализируем planning_stage через partial_result
+                    conn.execute(
+                        "UPDATE tasks SET partial_result='plan:approved', "
+                        "updated_at=datetime('now') WHERE id=?",
+                        (full_id,),
+                    )
+                    logger.info("plan_approved task_id=%s", full_id)
+                    return f"✓ План #{task_id_prefix[:8]} одобрен. Запускаю выполнение."
+
+                elif status in ("pending_approval", "requires_manual"):
+                    result = conn.execute(
+                        "UPDATE tasks SET status='pending', last_error_reason=NULL, "
+                        "updated_at=datetime('now') "
+                        "WHERE id=? AND status IN ('pending_approval', 'requires_manual')",
+                        (full_id,),
+                    )
+                    if result.rowcount > 0:
+                        logger.info(
+                            "task_approved task_id=%s note=%s",
+                            full_id, redact(note[:80]) if note else "",
+                        )
+                        return f"✓ Задача #{task_id_prefix[:8]} одобрена и поставлена в очередь."
+                    return f"Задача #{task_id_prefix[:8]} не в статусе для одобрения."
+
+                else:
+                    return (
+                        f"Задача #{task_id_prefix[:8]} не в статусе для одобрения "
+                        f"(текущий: {status})."
+                    )
         except Exception as exc:
             logger.error("handle_approve error task_id=%s: %s", full_id, exc)
             return "Ошибка при одобрении."
 
     async def _handle_reject(self, task_id_prefix: str, reason: str) -> str:
-        """Перевести задачу pending_approval → rejected."""
+        """Перевести задачу pending_approval → rejected, или отклонить план."""
         full_id = self._resolve_task_id(task_id_prefix)
         if not full_id:
             return f"Задача {task_id_prefix!r} не найдена."
 
         try:
             with get_conn(self._db_path) as conn:
-                result = conn.execute(
-                    "UPDATE tasks SET status='rejected', updated_at=datetime('now') "
-                    "WHERE id=? AND status='pending_approval'",
-                    (full_id,),
-                )
-                changed = result.rowcount > 0
+                row = conn.execute(
+                    "SELECT status FROM tasks WHERE id=?", (full_id,)
+                ).fetchone()
+                if not row:
+                    return f"Задача #{task_id_prefix[:8]} не найдена."
 
-            if changed:
-                logger.info(
-                    "task_rejected task_id=%s reason=%s",
-                    full_id, redact(reason[:80]) if reason else "",
-                )
-                return f"✗ Задача #{task_id_prefix[:8]} отклонена."
-            else:
-                return f"Задача #{task_id_prefix[:8]} не в статусе pending_approval."
+                status = row["status"]
+
+                if status == "plan_review":
+                    # Сигнализируем planning_stage через partial_result
+                    conn.execute(
+                        "UPDATE tasks SET partial_result='plan:rejected', "
+                        "updated_at=datetime('now') WHERE id=?",
+                        (full_id,),
+                    )
+                    logger.info("plan_rejected task_id=%s", full_id)
+                    return f"✗ План #{task_id_prefix[:8]} отклонён. Задача будет отменена."
+
+                elif status == "pending_approval":
+                    result = conn.execute(
+                        "UPDATE tasks SET status='rejected', updated_at=datetime('now') "
+                        "WHERE id=? AND status='pending_approval'",
+                        (full_id,),
+                    )
+                    if result.rowcount > 0:
+                        logger.info(
+                            "task_rejected task_id=%s reason=%s",
+                            full_id, redact(reason[:80]) if reason else "",
+                        )
+                        return f"✗ Задача #{task_id_prefix[:8]} отклонена."
+                    return f"Задача #{task_id_prefix[:8]} не в статусе pending_approval."
+
+                else:
+                    return (
+                        f"Задача #{task_id_prefix[:8]} не в статусе для отклонения "
+                        f"(текущий: {status})."
+                    )
         except Exception as exc:
             logger.error("handle_reject error task_id=%s: %s", full_id, exc)
             return "Ошибка при отклонении."
@@ -382,6 +432,67 @@ class TelegramHandler:
         except Exception as exc:
             logger.error("handle_cancel error task_id=%s: %s", full_id, exc)
             return "Ошибка при отмене."
+
+    async def _handle_plan(self, task_id_prefix: str) -> str:
+        """Показать текущий план задачи."""
+        full_id = self._resolve_task_id(task_id_prefix)
+        if not full_id:
+            return f"Задача {task_id_prefix!r} не найдена."
+        try:
+            with get_conn(self._db_path) as conn:
+                row = conn.execute(
+                    "SELECT plan_text, complexity, plan_revision FROM tasks WHERE id=?",
+                    (full_id,),
+                ).fetchone()
+            if not row or not row["plan_text"]:
+                return f"Задача #{task_id_prefix[:8]}: план отсутствует."
+
+            import json  # local: avoid circular import with supervisor.planner
+
+            try:
+                plan = json.loads(row["plan_text"])
+                from supervisor.planner import format_plan_for_tg  # lazy: circular dep
+
+                return format_plan_for_tg(plan, full_id)
+            except (json.JSONDecodeError, ImportError):
+                # Fallback: показать raw plan_text
+                text = str(row["plan_text"])[:3900]
+                return f"Plan (rev {row['plan_revision']}):\n{text}"
+        except Exception as exc:
+            logger.error("handle_plan error task_id=%s: %s", full_id, exc)
+            return "Ошибка при получении плана."
+
+    async def _handle_revise(self, task_id_prefix: str, feedback: str) -> str:
+        """Отправить план на доработку с фидбеком."""
+        full_id = self._resolve_task_id(task_id_prefix)
+        if not full_id:
+            return f"Задача {task_id_prefix!r} не найдена."
+        try:
+            with get_conn(self._db_path) as conn:
+                row = conn.execute(
+                    "SELECT status FROM tasks WHERE id=?", (full_id,)
+                ).fetchone()
+                if not row:
+                    return f"Задача #{task_id_prefix[:8]} не найдена."
+
+                if row["status"] != "plan_review":
+                    return f"Задача #{task_id_prefix[:8]} не в статусе plan_review."
+
+                # Сигнализируем planning_stage через partial_result
+                signal = f"plan:revised:{feedback}"
+                conn.execute(
+                    "UPDATE tasks SET partial_result=?, "
+                    "updated_at=datetime('now') WHERE id=?",
+                    (signal, full_id),
+                )
+            logger.info(
+                "plan_revision_requested task_id=%s feedback=%s",
+                full_id, redact(feedback[:80]),
+            )
+            return f"↻ Задача #{task_id_prefix[:8]}: план отправлен на доработку."
+        except Exception as exc:
+            logger.error("handle_revise error task_id=%s: %s", full_id, exc)
+            return "Ошибка при запросе ревизии."
 
     async def _create_task_from_message(
         self,

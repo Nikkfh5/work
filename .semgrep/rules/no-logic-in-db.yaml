@@ -1,0 +1,23 @@
+rules:
+  - id: no-logic-in-db
+    languages: [python]
+    severity: MEDIUM
+    message: >
+      db.py must remain a low-level transport layer (Invariant #1).
+      Do not add business logic, validation, or complex processing to storage/db.py.
+      Only execute/query methods and PRAGMA are allowed.
+    pattern-either:
+      - pattern: |
+          # Inside db.py, detect non-transport functions
+          def $FUNC(...):
+              ...
+              if $COND:
+                  ...
+                  raise ...
+    metadata:
+      category: maintainability
+      confidence: LOW
+      impact: MEDIUM
+      invariant: "1"
+      description: "Invariant #1: db.py is low-level transport only, no logic"
+      note: "This rule has limited detection. Manual review recommended for db.py changes."
