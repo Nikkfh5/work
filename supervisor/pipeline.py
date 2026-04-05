@@ -105,28 +105,6 @@ class WorkerContext:
         self._events.clear()
         return events
 
-    async def check_lease_or_abort(self) -> bool:
-        """Check if our lease is still valid. Returns False if lost.
-
-        Stages can call this after long-running operations (e.g. claude calls)
-        to detect mid-stage lease expiry (BUG-017 mitigation).
-        """
-        if not self.token:
-            return True
-        import asyncio
-
-        loop = asyncio.get_running_loop()
-        valid = await loop.run_in_executor(
-            None,
-            lambda: is_lease_valid(
-                self.task_id, self.worker_id, self.token, self.db_path
-            ),
-        )
-        if not valid:
-            logger.warning(
-                "check_lease_or_abort: lease lost task_id=%s", self.task_id
-            )
-        return valid
 
 
 # ── StageError hierarchy ─────────────────────────────────────────────────────
@@ -326,10 +304,12 @@ async def run_pipeline(ctx: WorkerContext, stages: list) -> None:
             # BUG-017: check lease validity before each stage (after prepare sets token)
             if ctx.token:
                 loop = asyncio.get_running_loop()
+                # Capture current values to avoid late-binding closure issues
+                _tid, _wid, _tok, _db = ctx.task_id, ctx.worker_id, ctx.token, ctx.db_path
                 valid = await loop.run_in_executor(
                     None,
-                    lambda: is_lease_valid(
-                        ctx.task_id, ctx.worker_id, ctx.token, ctx.db_path
+                    lambda tid=_tid, wid=_wid, tok=_tok, db=_db: is_lease_valid(
+                        tid, wid, tok, db
                     ),
                 )
                 if not valid:

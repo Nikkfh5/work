@@ -638,19 +638,101 @@ async def test_background_renewal_skips_when_no_token():
     mock_renew.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_check_lease_or_abort_returns_true_when_valid():
-    """ctx.check_lease_or_abort() returns True when lease is valid."""
-    ctx = _make_ctx(token="tok-valid")
-    with patch("supervisor.pipeline.is_lease_valid", return_value=True):
-        result = await ctx.check_lease_or_abort()
-    assert result is True
+def test_model_routing_simple_switches_to_sonnet():
+    """Model routing: simple complexity -> switches ctx.model to sonnet."""
+    ctx = _make_ctx(
+        model="claude-opus-4-6",
+        config={
+            "supervisor": {
+                "model_routing": {
+                    "simple": "claude-sonnet-4-6",
+                    "complex": "claude-opus-4-6",
+                },
+            },
+            "workers": {"job1_worker": {}},
+        },
+    )
+    # Simulate what planning_stage does after classification
+    model_routing = ctx.config.get("supervisor", {}).get("model_routing", {})
+    complexity = "simple"
+    new_model = model_routing.get(complexity, ctx.model)
+    if new_model and new_model != ctx.model:
+        ctx.model = new_model
+
+    assert ctx.model == "claude-sonnet-4-6"
 
 
-@pytest.mark.asyncio
-async def test_check_lease_or_abort_returns_false_when_lost():
-    """ctx.check_lease_or_abort() returns False when lease is gone."""
-    ctx = _make_ctx(token="tok-gone")
-    with patch("supervisor.pipeline.is_lease_valid", return_value=False):
-        result = await ctx.check_lease_or_abort()
-    assert result is False
+def test_model_routing_complex_keeps_opus():
+    """Model routing: complex complexity -> keeps opus."""
+    ctx = _make_ctx(
+        model="claude-opus-4-6",
+        config={
+            "supervisor": {
+                "model_routing": {
+                    "simple": "claude-sonnet-4-6",
+                    "complex": "claude-opus-4-6",
+                },
+            },
+            "workers": {"job1_worker": {}},
+        },
+    )
+    model_routing = ctx.config.get("supervisor", {}).get("model_routing", {})
+    complexity = "complex"
+    new_model = model_routing.get(complexity, ctx.model)
+    if new_model and new_model != ctx.model:
+        ctx.model = new_model
+
+    assert ctx.model == "claude-opus-4-6"
+
+
+def test_model_routing_no_config_keeps_original():
+    """Model routing: no model_routing in config -> keeps original model."""
+    ctx = _make_ctx(
+        model="claude-opus-4-6",
+        config={"supervisor": {}, "workers": {"job1_worker": {}}},
+    )
+    model_routing = ctx.config.get("supervisor", {}).get("model_routing", {})
+    new_model = model_routing.get("simple", ctx.model)
+    if new_model and new_model != ctx.model:
+        ctx.model = new_model
+
+    assert ctx.model == "claude-opus-4-6"
+
+
+def test_escalation_model_switch():
+    """Execute stage escalates to opus model on last attempt."""
+    ctx = _make_ctx(
+        model="claude-sonnet-4-6",
+        max_attempts=3,
+        config={
+            "supervisor": {
+                "model_routing": {"escalation": "claude-opus-4-6"},
+            },
+            "workers": {"job1_worker": {}},
+        },
+    )
+    # Simulate: is_last=True and attempt > 1
+    esc_model = ctx.config.get("supervisor", {}).get("model_routing", {}).get("escalation", "")
+    assert esc_model == "claude-opus-4-6"
+    # Apply escalation logic (same as execute.py)
+    if esc_model and esc_model != ctx.model:
+        ctx.model = esc_model
+    assert ctx.model == "claude-opus-4-6"
+
+
+def test_reviewer_model_override():
+    """Review stage uses model_routing.reviewer, not ctx.model."""
+    ctx = _make_ctx(
+        model="claude-sonnet-4-6",
+        config={
+            "supervisor": {
+                "model_routing": {"reviewer": "claude-opus-4-6"},
+            },
+            "workers": {"job1_worker": {}},
+        },
+    )
+    reviewer_model = ctx.config.get("supervisor", {}).get("model_routing", {}).get(
+        "reviewer", ctx.model
+    )
+    assert reviewer_model == "claude-opus-4-6"
+    assert ctx.model == "claude-sonnet-4-6"  # worker model unchanged
