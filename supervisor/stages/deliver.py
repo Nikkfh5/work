@@ -24,6 +24,32 @@ from supervisor.safe_exec import safe_exec
 logger = logging.getLogger(__name__)
 
 
+def _has_unpushed_commits(
+    exec_fn: Callable,
+    wt_path: str,
+    task_id: str,
+) -> bool:
+    """Check if there are unpushed commits on the current branch."""
+    try:
+        log_out, _log_err, log_rc = exec_fn(
+            ["git", "log", "--oneline", "@{upstream}..HEAD"],
+            cwd=wt_path,
+            timeout=30,
+        )
+        if log_rc == 0 and log_out.strip():
+            return True
+        if log_rc != 0:
+            # No upstream (new branch) — assume unpushed
+            logger.info(
+                "_has_unpushed_commits: no upstream, assuming unpushed task_id=%s",
+                task_id,
+            )
+            return True
+    except Exception:
+        return True  # safer to attempt push
+    return False
+
+
 async def _run_ci_and_push(
     task_id: str,
     job: str,
@@ -67,39 +93,34 @@ async def _run_ci_and_push(
     try:
         add_out, add_err, add_rc = exec_fn(["git", "add", "."], cwd=wt_path, timeout=60)
         if add_rc != 0:
-            logger.warning("_run_ci_and_push: git add failed task_id=%s rc=%d stderr=%s", task_id, add_rc, add_err[:200])
+            logger.warning(
+                "_run_ci_and_push: git add failed task_id=%s rc=%d stderr=%s",
+                task_id,
+                add_rc,
+                add_err[:200],
+            )
         _out, _err, rc = exec_fn(
             ["git", "commit", "-m", f"ai: task {task_id[:8]} — auto-commit"],
             cwd=wt_path,
             timeout=60,
         )
         if rc != 0:
-            logger.warning("_run_ci_and_push: git commit rc=%d task_id=%s stdout=%s stderr=%s", rc, task_id, _out[:200], _err[:200])
-            # Nothing to commit — check if there are unpushed commits (BUG-027)
+            logger.warning(
+                "_run_ci_and_push: git commit rc=%d task_id=%s stdout=%s stderr=%s",
+                rc,
+                task_id,
+                _out[:200],
+                _err[:200],
+            )
+            # Nothing to commit — check for unpushed commits (BUG-025/027)
             if "nothing to commit" in _out or "nothing to commit" in _err:
-                has_unpushed = False
-                try:
-                    log_out, _log_err, log_rc = exec_fn(
-                        ["git", "log", "--oneline", "@{upstream}..HEAD"],
-                        cwd=wt_path, timeout=30,
+                if not _has_unpushed_commits(exec_fn, wt_path, task_id):
+                    logger.info(
+                        "_run_ci_and_push: nothing to commit/push task_id=%s", task_id
                     )
-                    if log_rc == 0 and log_out.strip():
-                        has_unpushed = True
-                    elif log_rc != 0:
-                        # No upstream (new branch) — assume unpushed
-                        has_unpushed = True
-                        logger.info(
-                            "_run_ci_and_push: no upstream, assuming unpushed task_id=%s",
-                            task_id,
-                        )
-                except Exception:
-                    has_unpushed = True
-                if not has_unpushed:
-                    logger.info("_run_ci_and_push: nothing to commit, nothing to push task_id=%s", task_id)
                     return True, ""
-                # has_unpushed: skip CI, fall through to push (step 4)
                 logger.info(
-                    "_run_ci_and_push: nothing to commit but unpushed commits, pushing task_id=%s",
+                    "_run_ci_and_push: unpushed commits found, pushing task_id=%s",
                     task_id,
                 )
             else:
@@ -112,9 +133,14 @@ async def _run_ci_and_push(
     # 3. CI policy — run checks before push (skip if no new commit, BUG-027)
     ci_policy = worker_cfg.get("ci_policy", {})
     ci_required = ci_policy.get("required_pass", False)
-    for ci_cmd in ci_policy.get("run_before_push", []) if has_commit else []:
+    ci_commands = ci_policy.get("run_before_push", []) if has_commit else []
+    for ci_cmd in ci_commands:
         # Изолировать pytest от parent проекта (worktree != project root)
-        if ci_cmd and ci_cmd[0] == "pytest" and not any(a.startswith("--rootdir") for a in ci_cmd):
+        if (
+            ci_cmd
+            and ci_cmd[0] == "pytest"
+            and not any(a.startswith("--rootdir") for a in ci_cmd)
+        ):
             ci_cmd = list(ci_cmd) + [f"--rootdir={wt_path}"]
         try:
             _out, _err, rc = exec_fn(ci_cmd, cwd=wt_path, timeout=300)
@@ -176,15 +202,15 @@ def _build_ci_fix_prompt(
         f"\n"
         f"После исправления выведи:\n"
         f"<<<JSON>>>\n"
-        f'{{\n'
+        f"{{\n"
         f'  "status": "done",\n'
         f'  "confidence": 80,\n'
         f'  "result": {{\n'
         f'    "repos": [],\n'
         f'    "notes": "CI fix: <что исправлено>"\n'
-        f'  }},\n'
+        f"  }},\n"
         f'  "question": null\n'
-        f'}}\n'
+        f"}}\n"
         f"<<<END>>>\n"
     )
 
@@ -200,15 +226,27 @@ async def deliver_stage(ctx: WorkerContext) -> None:
         return
 
     # Если review/execute stage уже обработали ошибку — skip
-    if ctx.worker_status in ("_blocked_handled", "_error_handled", "_review_handled", "_session_refresh"):
+    if ctx.worker_status in (
+        "_blocked_handled",
+        "_error_handled",
+        "_review_handled",
+        "_session_refresh",
+    ):
         return
 
     # Explorer / report mode: just send result to TG, no CI/push
     delivery_mode = ctx.worker_cfg.get("delivery_policy", {}).get("mode", "push")
     if delivery_mode == "report":
         notes = ctx.parsed.get("result", {}).get("notes", "")
-        release_lease(ctx.task_id, ctx.worker_id, ctx.token, "done", db_path=ctx.db_path)
-        ctx.emit("task_done", confidence=ctx.confidence, notes=f"[Explorer report]\n{notes}", cost_usd=ctx.cumulative_cost_usd)
+        release_lease(
+            ctx.task_id, ctx.worker_id, ctx.token, "done", db_path=ctx.db_path
+        )
+        ctx.emit(
+            "task_done",
+            confidence=ctx.confidence,
+            notes=f"[Explorer report]\n{notes}",
+            cost_usd=ctx.cumulative_cost_usd,
+        )
         logger.info("deliver_stage: report mode done task_id=%s", ctx.task_id)
         return
 
@@ -260,9 +298,16 @@ async def deliver_stage(ctx: WorkerContext) -> None:
 
                     runner = ctx.runner or _default_runner
                     # Use worktree path so fixes land in the right place
-                    fix_cwd = ctx.repo_manager.worktree_abs_path(ctx.task_id, repo["alias"]) if ctx.repo_manager else ctx.worker_dir
+                    fix_cwd = (
+                        ctx.repo_manager.worktree_abs_path(ctx.task_id, repo["alias"])
+                        if ctx.repo_manager
+                        else ctx.worker_dir
+                    )
                     _fix_stdout, _fix_metrics = await run_claude_tracked(
-                        fix_prompt, cwd=fix_cwd, timeout=ctx.worker_timeout, runner=runner
+                        fix_prompt,
+                        cwd=fix_cwd,
+                        timeout=ctx.worker_timeout,
+                        runner=runner,
                     )
                     ctx.cumulative_cost_usd += _fix_metrics.get("cost_usd", 0)
                     ctx.cumulative_input_tokens += _fix_metrics.get("input_tokens", 0)
@@ -305,9 +350,19 @@ async def deliver_stage(ctx: WorkerContext) -> None:
             "review_approved",
             message=f"DONE (reviewer APPROVED, iter={iteration})\n{feedback[:200]}",
         )
-        ctx.emit("task_done", confidence=ctx.confidence, notes="", cost_usd=ctx.cumulative_cost_usd)
+        ctx.emit(
+            "task_done",
+            confidence=ctx.confidence,
+            notes="",
+            cost_usd=ctx.cumulative_cost_usd,
+        )
     else:
         notes = ctx.parsed.get("result", {}).get("notes", "")
-        ctx.emit("task_done", confidence=ctx.confidence, notes=notes, cost_usd=ctx.cumulative_cost_usd)
+        ctx.emit(
+            "task_done",
+            confidence=ctx.confidence,
+            notes=notes,
+            cost_usd=ctx.cumulative_cost_usd,
+        )
 
     logger.info("deliver_stage: done task_id=%s", ctx.task_id)

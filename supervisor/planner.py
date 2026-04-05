@@ -23,15 +23,56 @@ logger = logging.getLogger(__name__)
 # Слова-действия для проверки на расплывчатость описания (рус + англ)
 _ACTION_WORDS = [
     # Русские
-    "сделай", "добавь", "исправь", "удали", "создай", "реализуй",
-    "настрой", "обнови", "замени", "перепиши", "напиши", "проверь",
-    "проанализируй", "найди", "оптимизируй", "мигрируй", "протестируй",
-    "убери", "перенеси", "измени", "покажи", "объясни", "запусти",
+    "сделай",
+    "добавь",
+    "исправь",
+    "удали",
+    "создай",
+    "реализуй",
+    "настрой",
+    "обнови",
+    "замени",
+    "перепиши",
+    "напиши",
+    "проверь",
+    "проанализируй",
+    "найди",
+    "оптимизируй",
+    "мигрируй",
+    "протестируй",
+    "убери",
+    "перенеси",
+    "измени",
+    "покажи",
+    "объясни",
+    "запусти",
     # English
-    "add", "fix", "create", "implement", "update", "remove", "write",
-    "refactor", "deploy", "configure", "build", "test", "analyze",
-    "find", "optimize", "migrate", "move", "change", "show", "run",
-    "delete", "setup", "check", "review", "debug", "install",
+    "add",
+    "fix",
+    "create",
+    "implement",
+    "update",
+    "remove",
+    "write",
+    "refactor",
+    "deploy",
+    "configure",
+    "build",
+    "test",
+    "analyze",
+    "find",
+    "optimize",
+    "migrate",
+    "move",
+    "change",
+    "show",
+    "run",
+    "delete",
+    "setup",
+    "check",
+    "review",
+    "debug",
+    "install",
 ]
 
 # Ключевые слова, повышающие вероятность "complex"
@@ -87,7 +128,12 @@ async def classify_complexity(
 
     # Правило 1: очень длинное + хотя бы 1 keyword → complex
     if len(description) > threshold * 3 and keyword_hits >= 1:
-        logger.info("classify_complexity: complex (length=%d > %d + keywords=%d)", len(description), threshold * 3, keyword_hits)
+        logger.info(
+            "classify_complexity: complex (length=%d > %d + keywords=%d)",
+            len(description),
+            threshold * 3,
+            keyword_hits,
+        )
         return "complex"
 
     # Правило 2: 3+ ключевых слов → complex (was 2)
@@ -97,12 +143,17 @@ async def classify_complexity(
 
     # Правило 3: короткое описание → simple
     if len(description) <= threshold:
-        logger.info("classify_complexity: simple (length=%d <= %d)", len(description), threshold)
+        logger.info(
+            "classify_complexity: simple (length=%d <= %d)", len(description), threshold
+        )
         return "simple"
 
     # Правило 4: средняя длина + 2 keywords → complex
     if keyword_hits >= 2:
-        logger.info("classify_complexity: complex (medium length + keyword_hits=%d)", keyword_hits)
+        logger.info(
+            "classify_complexity: complex (medium length + keyword_hits=%d)",
+            keyword_hits,
+        )
         return "complex"
 
     # Пограничный случай: спросить LLM
@@ -112,7 +163,9 @@ async def classify_complexity(
             logger.info("classify_complexity: %s (llm)", result)
             return result
         except Exception as exc:
-            logger.warning("classify_complexity: llm failed: %s, defaulting to simple", exc)
+            logger.warning(
+                "classify_complexity: llm failed: %s, defaulting to simple", exc
+            )
             return "simple"
 
     # Нет runner → по умолчанию simple (Sonnet справится с большинством задач)

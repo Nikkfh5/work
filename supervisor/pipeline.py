@@ -106,7 +106,6 @@ class WorkerContext:
         return events
 
 
-
 # ── StageError hierarchy ─────────────────────────────────────────────────────
 
 
@@ -214,7 +213,9 @@ def _worker_to_job(worker_id: str) -> str:
 # ── Pipeline engine ──────────────────────────────────────────────────────────
 
 
-async def _background_lease_renewal(ctx: WorkerContext, stop_event, *, _interval: float = 0) -> None:
+async def _background_lease_renewal(
+    ctx: WorkerContext, stop_event, *, _interval: float = 0
+) -> None:
     """
     Background task: renew lease every TTL/2 seconds while pipeline runs.
 
@@ -229,7 +230,8 @@ async def _background_lease_renewal(ctx: WorkerContext, stop_event, *, _interval
     interval = _interval or max(ctx.lease_ttl // 2, 30)  # at least every 30s
     logger.info(
         "background_lease_renewal: started task_id=%s interval=%ds",
-        ctx.task_id, interval,
+        ctx.task_id,
+        interval,
     )
     while not stop_event.is_set():
         try:
@@ -238,31 +240,42 @@ async def _background_lease_renewal(ctx: WorkerContext, stop_event, *, _interval
             return  # stop_event was set
         except asyncio.TimeoutError:
             pass  # interval elapsed, time to renew
-        logger.info(
+        logger.debug(
             "background_lease_renewal: tick task_id=%s token=%s",
-            ctx.task_id, "yes" if ctx.token else "no",
+            ctx.task_id,
+            "yes" if ctx.token else "no",
         )
 
         if not ctx.token:
-            logger.debug("background_lease_renewal: no token yet task_id=%s", ctx.task_id)
+            logger.debug(
+                "background_lease_renewal: no token yet task_id=%s", ctx.task_id
+            )
             continue  # wait for prepare_stage to set token
 
         try:
             loop = asyncio.get_running_loop()
+            _tid, _wid, _tok, _ttl, _db = (
+                ctx.task_id,
+                ctx.worker_id,
+                ctx.token,
+                ctx.lease_ttl,
+                ctx.db_path,
+            )
             renewed = await loop.run_in_executor(
                 None,
-                lambda: renew_lease(
-                    ctx.task_id,
-                    ctx.worker_id,
-                    ctx.token,
-                    ttl=ctx.lease_ttl,
-                    db_path=ctx.db_path,
+                lambda tid=_tid, wid=_wid, tok=_tok, ttl=_ttl, db=_db: renew_lease(
+                    tid,
+                    wid,
+                    tok,
+                    ttl=ttl,
+                    db_path=db,
                 ),
             )
         except Exception as exc:
             logger.error(
                 "background_lease_renewal: exception task_id=%s: %s",
-                ctx.task_id, exc,
+                ctx.task_id,
+                exc,
             )
             continue  # retry next interval, don't crash
 
@@ -305,7 +318,12 @@ async def run_pipeline(ctx: WorkerContext, stages: list) -> None:
             if ctx.token:
                 loop = asyncio.get_running_loop()
                 # Capture current values to avoid late-binding closure issues
-                _tid, _wid, _tok, _db = ctx.task_id, ctx.worker_id, ctx.token, ctx.db_path
+                _tid, _wid, _tok, _db = (
+                    ctx.task_id,
+                    ctx.worker_id,
+                    ctx.token,
+                    ctx.db_path,
+                )
                 valid = await loop.run_in_executor(
                     None,
                     lambda tid=_tid, wid=_wid, tok=_tok, db=_db: is_lease_valid(

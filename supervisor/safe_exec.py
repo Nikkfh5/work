@@ -159,17 +159,31 @@ class SafeExecError(Exception):
 
 
 _BLOCKED_ENV_PATTERNS = (
-    "TOKEN", "SECRET", "PASSWORD", "KEY", "CREDENTIAL",
-    "AWS_", "AZURE_", "GCP_",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "KEY",
+    "CREDENTIAL",
+    "AWS_",
+    "AZURE_",
+    "GCP_",
 )
 
 # Env vars that must NEVER be passed (injection/leak vectors)
 _DENYLIST_ENV_KEYS = {
-    "LD_PRELOAD", "LD_LIBRARY_PATH",
-    "HISTFILE", "HISTFILESIZE",
-    "DATABASE_URL", "REDIS_URL", "MONGO_URL",
-    "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
-    "TELEGRAM_BOT_TOKEN", "NOTION_TOKEN",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "HISTFILE",
+    "HISTFILESIZE",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "MONGO_URL",
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "TELEGRAM_BOT_TOKEN",
+    "NOTION_TOKEN",
 }
 
 
@@ -260,7 +274,10 @@ def _check_cmd(cmd: list[str]) -> None:
                 if not arg.startswith("-"):
                     config_key = arg
                     break
-            if config_key is not None and config_key.lower() not in SAFE_GIT_CONFIG_KEYS:
+            if (
+                config_key is not None
+                and config_key.lower() not in SAFE_GIT_CONFIG_KEYS
+            ):
                 raise SafeExecError(
                     f"safe_exec: git config key {config_key!r} is not in safe whitelist. "
                     f"Allowed: {sorted(SAFE_GIT_CONFIG_KEYS)}"

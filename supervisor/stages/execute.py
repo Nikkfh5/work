@@ -207,13 +207,17 @@ async def execute_stage(ctx: WorkerContext) -> None:
 
         # Escalation: on last attempt, switch to stronger model
         if is_last and attempt > 1:
-            esc_model = ctx.config.get("supervisor", {}).get("model_routing", {}).get(
-                "escalation", ""
+            esc_model = (
+                ctx.config.get("supervisor", {})
+                .get("model_routing", {})
+                .get("escalation", "")
             )
             if esc_model and esc_model != ctx.model:
                 logger.info(
                     "execute_stage: escalating model %s → %s (last attempt) task_id=%s",
-                    ctx.model or "default", esc_model, ctx.task_id,
+                    ctx.model or "default",
+                    esc_model,
+                    ctx.task_id,
                 )
                 ctx.model = esc_model
 
@@ -253,8 +257,11 @@ async def execute_stage(ctx: WorkerContext) -> None:
         # Запустить claude CLI
         try:
             stdout, metrics = await run_claude_tracked(
-                prompt, cwd=ctx.worker_dir, timeout=ctx.worker_timeout,
-                runner=runner, model=ctx.model or None,
+                prompt,
+                cwd=ctx.worker_dir,
+                timeout=ctx.worker_timeout,
+                runner=runner,
+                model=ctx.model or None,
             )
             # Accumulate cost metrics
             ctx.cumulative_cost_usd += metrics.get("cost_usd", 0)
@@ -320,12 +327,19 @@ async def execute_stage(ctx: WorkerContext) -> None:
         if should_refresh_session(metrics):
             progress = extract_progress_summary(stdout)
             save_checkpoint(
-                ctx.task_id, ctx.worker_id, "worker", attempt,
-                metrics, progress, db_path=ctx.db_path,
+                ctx.task_id,
+                ctx.worker_id,
+                "worker",
+                attempt,
+                metrics,
+                progress,
+                db_path=ctx.db_path,
             )
             from supervisor.lease_manager import release_lease
 
-            release_lease(ctx.task_id, ctx.worker_id, ctx.token, "blocked", db_path=ctx.db_path)
+            release_lease(
+                ctx.task_id, ctx.worker_id, ctx.token, "blocked", db_path=ctx.db_path
+            )
             ctx.emit(
                 "session_refresh",
                 tokens=metrics.get("input_tokens", 0),
@@ -334,7 +348,8 @@ async def execute_stage(ctx: WorkerContext) -> None:
             ctx.worker_status = "_session_refresh"
             logger.warning(
                 "execute_stage: session refresh needed task_id=%s tokens=%d",
-                ctx.task_id, metrics.get("input_tokens", 0),
+                ctx.task_id,
+                metrics.get("input_tokens", 0),
             )
             return
 
