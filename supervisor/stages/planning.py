@@ -120,6 +120,19 @@ async def planning_stage(ctx: WorkerContext) -> None:
     )
     ctx.complexity = complexity
 
+    # Model routing based on complexity
+    model_routing = ctx.config.get("supervisor", {}).get("model_routing", {})
+    if complexity == "simple":
+        new_model = model_routing.get("simple", ctx.model)
+    else:
+        new_model = model_routing.get("complex", ctx.model)
+    if new_model and new_model != ctx.model:
+        logger.info(
+            "planning_stage: model routing %s → %s task_id=%s",
+            ctx.model or "default", new_model, ctx.task_id,
+        )
+        ctx.model = new_model
+
     # Сохраняем complexity в DB
     _update_task_field(ctx.task_id, "complexity", complexity, ctx.db_path)
 

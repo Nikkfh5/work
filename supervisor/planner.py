@@ -85,20 +85,25 @@ async def classify_complexity(
     desc_lower = description.lower()
     keyword_hits = sum(1 for kw in keywords if kw.lower() in desc_lower)
 
-    # Правило 1: очень длинное описание → complex
-    if len(description) > threshold * 2:
-        logger.info("classify_complexity: complex (length=%d > %d)", len(description), threshold * 2)
+    # Правило 1: очень длинное + хотя бы 1 keyword → complex
+    if len(description) > threshold * 3 and keyword_hits >= 1:
+        logger.info("classify_complexity: complex (length=%d > %d + keywords=%d)", len(description), threshold * 3, keyword_hits)
         return "complex"
 
-    # Правило 2: много ключевых слов → complex
-    if keyword_hits >= 2:
-        logger.info("classify_complexity: complex (keyword_hits=%d)", keyword_hits)
+    # Правило 2: 3+ ключевых слов → complex (was 2)
+    if keyword_hits >= 3:
+        logger.info("classify_complexity: complex (keyword_hits=%d >= 3)", keyword_hits)
         return "complex"
 
-    # Правило 3: короткое и без ключевых слов → simple
-    if len(description) <= threshold and keyword_hits == 0:
-        logger.info("classify_complexity: simple (length=%d, no keywords)", len(description))
+    # Правило 3: короткое описание → simple
+    if len(description) <= threshold:
+        logger.info("classify_complexity: simple (length=%d <= %d)", len(description), threshold)
         return "simple"
+
+    # Правило 4: средняя длина + 2 keywords → complex
+    if keyword_hits >= 2:
+        logger.info("classify_complexity: complex (medium length + keyword_hits=%d)", keyword_hits)
+        return "complex"
 
     # Пограничный случай: спросить LLM
     if runner:
@@ -107,12 +112,12 @@ async def classify_complexity(
             logger.info("classify_complexity: %s (llm)", result)
             return result
         except Exception as exc:
-            logger.warning("classify_complexity: llm failed: %s, defaulting to complex", exc)
-            return "complex"
+            logger.warning("classify_complexity: llm failed: %s, defaulting to simple", exc)
+            return "simple"
 
-    # Нет runner → по умолчанию complex (безопаснее)
-    logger.info("classify_complexity: complex (borderline, no runner)")
-    return "complex"
+    # Нет runner → по умолчанию simple (Sonnet справится с большинством задач)
+    logger.info("classify_complexity: simple (borderline, no runner)")
+    return "simple"
 
 
 async def _llm_classify(description: str, runner: Callable) -> str:

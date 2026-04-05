@@ -204,11 +204,25 @@ async def execute_stage(ctx: WorkerContext) -> None:
 
     for attempt in range(1, ctx.max_attempts + 1):
         is_last = attempt == ctx.max_attempts
+
+        # Escalation: on last attempt, switch to stronger model
+        if is_last and attempt > 1:
+            esc_model = ctx.config.get("supervisor", {}).get("model_routing", {}).get(
+                "escalation", ""
+            )
+            if esc_model and esc_model != ctx.model:
+                logger.info(
+                    "execute_stage: escalating model %s → %s (last attempt) task_id=%s",
+                    ctx.model or "default", esc_model, ctx.task_id,
+                )
+                ctx.model = esc_model
+
         logger.info(
-            "execute_stage: attempt %d/%d task_id=%s",
+            "execute_stage: attempt %d/%d task_id=%s model=%s",
             attempt,
             ctx.max_attempts,
             ctx.task_id,
+            ctx.model or "default",
         )
 
         # Промпт: json_invalid -> коррекционный, иначе полный

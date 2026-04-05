@@ -16,6 +16,13 @@ supervisor:
   context_supervisor_coverage: 0.6  # 60% контекста каждого воркера видит supervisor
   context_worker_coverage: 0.9      # 90% своего контекста видит воркер
 
+  # Model routing based on complexity
+  model_routing:
+    simple: claude-sonnet-4-6         # простые задачи → Sonnet (быстрее, дешевле)
+    complex: claude-opus-4-6          # сложные задачи → Opus (качественнее)
+    reviewer: claude-opus-4-6         # ревьюер ВСЕГДА Opus (строгий review)
+    escalation: claude-opus-4-6       # escalation на последней попытке → Opus
+
   # Planning-Approval Pipeline
   planning:
     enabled: true                     # активирован planning pipeline

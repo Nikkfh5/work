@@ -73,24 +73,24 @@ async def test_classify_simple_short():
 
 @pytest.mark.asyncio
 async def test_classify_complex_long():
-    """Description longer than threshold*2 -> 'complex'."""
-    config = {"complexity_threshold": 50, "complexity_keywords": []}
-    long_desc = "a" * 101  # > 50*2 = 100
+    """Description longer than threshold*3 + keyword -> 'complex'."""
+    config = {"complexity_threshold": 50, "complexity_keywords": ["refactor"]}
+    long_desc = "refactor " + "a" * 150  # > 50*3=150, has keyword
     result = await classify_complexity(long_desc, config)
     assert result == "complex"
 
 
-# ── 3. classify_complexity: 2+ keywords -> "complex" ───────────────────────────
+# ── 3. classify_complexity: 3+ keywords -> "complex" ───────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_classify_complex_keywords():
-    """Two or more keyword hits -> 'complex'."""
+    """Three or more keyword hits -> 'complex'."""
     config = {
         "complexity_threshold": 1000,
         "complexity_keywords": ["refactor", "migration", "security"],
     }
-    desc = "Need to refactor the auth module and run a migration"
+    desc = "Need to refactor the auth module, run a migration, and fix security"
     result = await classify_complexity(desc, config)
     assert result == "complex"
 
@@ -128,15 +128,15 @@ async def test_classify_borderline_uses_llm():
 
 
 @pytest.mark.asyncio
-async def test_classify_borderline_no_runner_defaults_complex():
-    """Borderline case without runner -> defaults to 'complex'."""
+async def test_classify_borderline_no_runner_defaults_simple():
+    """Borderline case without runner -> defaults to 'simple' (Sonnet handles most tasks)."""
     config = {
         "complexity_threshold": 20,
         "complexity_keywords": ["refactor"],
     }
     desc = "refactor this small function"  # borderline: 1 keyword, len > threshold
     result = await classify_complexity(desc, config, runner=None)
-    assert result == "complex"
+    assert result == "simple"
 
 
 # ── 7. create_plan: valid plan JSON -> valid dict ───────────────────────────────

@@ -229,11 +229,14 @@ async def _run_review_cycle(ctx: WorkerContext) -> None:
             prev_issues=prev_issues if iteration > 1 else None,
         )
 
-        # Run reviewer
+        # Run reviewer — always use reviewer model (stricter review with Opus)
+        reviewer_model = ctx.config.get("supervisor", {}).get("model_routing", {}).get(
+            "reviewer", ctx.model
+        )
         try:
             reviewer_stdout, reviewer_metrics = await run_claude_tracked(
                 reviewer_prompt, cwd=reviewer_dir, timeout=ctx.worker_timeout,
-                runner=runner, model=ctx.model or None,
+                runner=runner, model=reviewer_model or None,
             )
             ctx.cumulative_cost_usd += reviewer_metrics.get("cost_usd", 0)
             ctx.cumulative_input_tokens += reviewer_metrics.get("input_tokens", 0)
