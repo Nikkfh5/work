@@ -224,6 +224,70 @@ async def test_ci_auto_fix_runner_crash(db_path):
 # ── test_build_ci_fix_prompt ────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
+async def test_nothing_to_commit_skips_ci_and_push(db_path):
+    """BUG-025: tasks with no files should skip CI/push when nothing to commit and nothing to push."""
+
+    def mock_executor(cmd, cwd=None, timeout=None):
+        if cmd[0] == "git" and cmd[1] == "commit":
+            return ("On branch ai/task-xxx\nnothing to commit, working tree clean", "", 1)
+        if cmd[0] == "git" and cmd[1] == "log":
+            return ("", "", 0)  # empty output = no unpushed commits
+        if cmd == ["git", "push", "origin", "HEAD"]:
+            raise AssertionError("git push should not be called when nothing to commit/push")
+        return ("", "", 0)
+
+    ctx = _make_ctx(
+        db_path=db_path,
+        executor=mock_executor,
+        worker_cfg={"repos": [{"alias": "api"}], "ci_policy": {"required_pass": True, "run_before_push": [["pytest"]]}},
+    )
+
+    with patch("supervisor.stages.deliver.release_lease"):
+        await deliver_stage(ctx)
+
+    events = ctx.drain_events()
+    done_events = [e for e in events if e["type"] == "task_done"]
+    assert len(done_events) == 1
+    fail_events = [e for e in events if e["type"] == "task_failed"]
+    assert len(fail_events) == 0
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_commit_but_unpushed_commits_pushes(db_path):
+    """BUG-027: nothing to commit but unpushed commits should still push."""
+    push_called = {"n": 0}
+    ci_called = {"n": 0}
+
+    def mock_executor(cmd, cwd=None, timeout=None):
+        if cmd[0] == "git" and cmd[1] == "commit":
+            return ("nothing to commit, working tree clean", "", 1)
+        if cmd[0] == "git" and cmd[1] == "log":
+            return ("abc1234 previous auto-commit\n", "", 0)  # unpushed commits exist
+        if cmd[0] == "pytest":
+            ci_called["n"] += 1
+            return ("", "", 0)
+        if cmd == ["git", "push", "origin", "HEAD"]:
+            push_called["n"] += 1
+            return ("", "", 0)
+        return ("", "", 0)
+
+    ctx = _make_ctx(
+        db_path=db_path,
+        executor=mock_executor,
+        worker_cfg={"repos": [{"alias": "api"}], "ci_policy": {"required_pass": True, "run_before_push": [["pytest"]]}},
+    )
+
+    with patch("supervisor.stages.deliver.release_lease"):
+        await deliver_stage(ctx)
+
+    assert push_called["n"] == 1, "git push should be called for unpushed commits"
+    assert ci_called["n"] == 0, "CI should be skipped when nothing new to commit"
+    events = ctx.drain_events()
+    done_events = [e for e in events if e["type"] == "task_done"]
+    assert len(done_events) == 1
+
+
 def test_build_ci_fix_prompt_basic():
     """_build_ci_fix_prompt includes task description, error, and attempt info."""
     prompt = _build_ci_fix_prompt(

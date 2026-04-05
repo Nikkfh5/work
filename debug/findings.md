@@ -59,3 +59,61 @@ Append-only лог находок босса. Каждый запуск допи
 **FIRST FULL E2E:** Task abf60a52 — prepare → planning → execute → review:APPROVED → ruff → git add → git commit → pytest(3 passed) → git push ✅
 
 **POSITIVE:** Весь pipeline работает end-to-end. Worker создаёт качественный код, reviewer одобряет на 1-й итерации, deliver stage полностью функционален.
+
+---
+
+### 2026-04-04 EXP-008 findings
+
+**STABILITY CONFIRMED:** 3/3 coding-задачи прошли полный E2E без единого критического бага. Pipeline стабилен: planning → execute → review → deliver → git push.
+
+**REVIEW CYCLE CONFIRMED:** Task 88e7a1e5 (validate_email) — reviewer выдал NEEDS_CHANGES на 1-й итерации, worker исправил, APPROVED на 2-й. Цикл worker↔reviewer работает корректно.
+
+**PLANNING CONFIRMED:** Все 3 complex-задачи корректно классифицированы, планы созданы (confidence 82-85), approval через partial_result работает.
+
+**LEASE STABILITY:** 0 lease_stale за всю сессию (~12 мин uptime). Background renewal полностью решил проблему.
+
+**BUG-025 (MEDIUM):** Задачи без файлов (анализ/отчёты) идут в deliver stage → git commit rc=1 (nothing to commit) → pytest rc=5 (no tests) → CI auto-fix loop → git_push_failed. Нужен skip deliver для задач у которых worker не создал файлы, или определение "explorer" типа задач.
+
+**POSITIVE:** Система готова к production use для coding-задач. Все критические баги (BUG-014..022) починены и верифицированы в 3 последовательных сессиях.
+
+---
+
+### 2026-04-05 EXP-009 findings
+
+**BUG-026 (CRITICAL): Background lease renewal в pipeline.py НЕ РАБОТАЕТ.**
+- Ноль записей renewal в логах за всю сессию (30 мин)
+- 3/5 задач получили lease_stale из-за нерабочего renewal
+- Planning stage renewal (poll loop в planning.py) РАБОТАЕТ — locked_until обновляется
+- Pipeline.py `_background_lease_renewal` asyncio task создаётся но lease не обновляет
+- Код не менялся с FIX-002 (2026-04-03), но renewal не работает → возможно Windows asyncio issue или тихое исключение в background task
+- **РЕГРЕССИЯ:** В EXP-006 (04-03) renewal работал. В EXP-008 (04-04) lease_stale=0. Сейчас 3/5 stale.
+
+**BUG-017 (HIGH) — подтверждён x3: Zombie pipeline после lease_stale.**
+- 3 задачи: pipeline продолжил работу после release_stale → deliver → git push → TG notifications
+- 4699b5f2: zombie push SUCCESS (код на GitHub)
+- 95aa89ae: zombie push SUCCESS (код на GitHub)
+- dc54db4e: zombie "nothing to commit" → push пропущен
+- Pipeline НЕ проверяет lease validity перед каждым stage
+- Результат: status="error" но работа выполнена → пользователь видит ложную "ошибку"
+
+**BUG-027 (MEDIUM): CI auto-fix "nothing to commit" пропускает push начального коммита.**
+- dc54db4e: initial commit + ruff fix коммит сделаны локально. После CI auto-fix claude session: ruff format → git add → git commit → "nothing to commit" → skip push
+- 2 непушенных коммита на локальной ветке `ai/task-dc54db4e`
+- Fix: проверять unpushed commits (`git log origin/branch..branch`) перед skip
+
+**PATTERN: Opus всегда получает NEEDS_CHANGES, Sonnet — нет.**
+- Opus: 2/2 задачи получили NEEDS_CHANGES (dc54db4e: 1 iter, 95aa89ae: 2 iters)
+- Sonnet: 0/3 coding задачи получили NEEDS_CHANGES (все APPROVED iter 1)
+- Гипотеза: opus генерирует более "сложный" код, reviewer находит больше issues. Или opus включает лишние зависимости/паттерны.
+
+**CI AUTO-FIX CONFIRMED:** Впервые протестирован полный цикл:
+- ruff check fail → claude fix → ruff pass → push (79674fd6)
+- pytest fail → claude fix (hypothesis dep) → pytest pass → push (4699b5f2)
+- ruff fail → claude fix → "nothing to commit" → BUG-027 (dc54db4e)
+
+**SONNET PERFORMANCE:** Security задачи на sonnet значительно дольше:
+- string_utils (simple): worker 51s
+- HTML sanitizer (security): worker 189s (3.7x)
+- stack (simple): worker 36s
+
+**POSITIVE:** Pipeline стабилен для coding задач. 5/5 задач создали качественный код. CI auto-fix работает. Planning classifier корректен. TG notifications надёжны.

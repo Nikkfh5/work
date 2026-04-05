@@ -63,6 +63,7 @@ async def _run_ci_and_push(
                 )
 
     # 2. Git add + commit
+    has_commit = False
     try:
         add_out, add_err, add_rc = exec_fn(["git", "add", "."], cwd=wt_path, timeout=60)
         if add_rc != 0:
@@ -74,16 +75,40 @@ async def _run_ci_and_push(
         )
         if rc != 0:
             logger.warning("_run_ci_and_push: git commit rc=%d task_id=%s stdout=%s stderr=%s", rc, task_id, _out[:200], _err[:200])
-            # Nothing to commit is OK (rc=1 with "nothing to commit")
-            if "nothing to commit" not in _out and "nothing to commit" not in _err:
+            # Nothing to commit — check if there are unpushed commits (BUG-027)
+            if "nothing to commit" in _out or "nothing to commit" in _err:
+                has_unpushed = False
+                try:
+                    log_out, _log_err, log_rc = exec_fn(
+                        ["git", "log", "--oneline", "@{upstream}..HEAD"],
+                        cwd=wt_path, timeout=30,
+                    )
+                    if log_rc == 0 and log_out.strip():
+                        has_unpushed = True
+                    elif log_rc != 0:
+                        # No upstream (new branch) — assume unpushed
+                        has_unpushed = True
+                except Exception:
+                    has_unpushed = True
+                if not has_unpushed:
+                    logger.info("_run_ci_and_push: nothing to commit, nothing to push task_id=%s", task_id)
+                    return True, ""
+                # has_unpushed: skip CI, fall through to push (step 4)
+                logger.info(
+                    "_run_ci_and_push: nothing to commit but unpushed commits, pushing task_id=%s",
+                    task_id,
+                )
+            else:
                 return False, f"git commit failed (rc={rc}): {_err[:200]}"
+        else:
+            has_commit = True
     except Exception as exc:
         return False, f"git commit error: {str(exc)[:200]}"
 
-    # 3. CI policy — run checks before push
+    # 3. CI policy — run checks before push (skip if no new commit, BUG-027)
     ci_policy = worker_cfg.get("ci_policy", {})
     ci_required = ci_policy.get("required_pass", False)
-    for ci_cmd in ci_policy.get("run_before_push", []):
+    for ci_cmd in ci_policy.get("run_before_push", []) if has_commit else []:
         # Изолировать pytest от parent проекта (worktree != project root)
         if ci_cmd and ci_cmd[0] == "pytest" and not any(a.startswith("--rootdir") for a in ci_cmd):
             ci_cmd = list(ci_cmd) + [f"--rootdir={wt_path}"]

@@ -95,7 +95,8 @@ async def test_pipeline_stops_on_stage_error(db_path):
         client_contact="42",
     )
 
-    await run_pipeline(ctx, [stage_a, stage_b, stage_c])
+    with patch("supervisor.pipeline.is_lease_valid", return_value=True):
+        await run_pipeline(ctx, [stage_a, stage_b, stage_c])
 
     assert call_order == ["a"]  # c not called
     ctx.tg_handler.notify_owner.assert_called_once()
@@ -250,7 +251,8 @@ async def test_stage_error_with_notify_false(db_path):
     async def stage_silent_fail(c):
         raise StageError(reason="test_reason", message="silent", notify=False)
 
-    await run_pipeline(ctx, [stage_silent_fail])
+    with patch("supervisor.pipeline.is_lease_valid", return_value=True):
+        await run_pipeline(ctx, [stage_silent_fail])
     ctx.tg_handler.notify_owner.assert_not_called()
 
 
@@ -457,7 +459,8 @@ async def test_task_failed_event_on_stage_error(db_path):
     async def stage_fail(c):
         raise WorkerCrash(reason="worker_crash", message="boom")
 
-    await run_pipeline(ctx, [stage_fail])
+    with patch("supervisor.pipeline.is_lease_valid", return_value=True):
+        await run_pipeline(ctx, [stage_fail])
 
     # Event bus dispatched the failure via tg_handler.notify_owner
     ctx.tg_handler.notify_owner.assert_called_once()
@@ -516,3 +519,74 @@ async def test_unknown_event_type_logged_no_crash():
 
     # tg_handler.notify_owner should NOT be called for unknown events
     ctx.tg_handler.notify_owner.assert_not_called()
+
+
+# ── test_pipeline_aborts_on_lost_lease (BUG-017) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_pipeline_aborts_on_lost_lease():
+    """BUG-017: pipeline aborts if lease is lost before a stage."""
+    ctx = _make_ctx(token="tok-lost")
+    call_order = []
+
+    async def stage_a(c):
+        call_order.append("a")
+
+    async def stage_b(c):
+        call_order.append("b")
+
+    # is_lease_valid returns False → pipeline should abort before stage_b
+    with patch("supervisor.pipeline.is_lease_valid", return_value=False):
+        await run_pipeline(ctx, [stage_a, stage_b])
+
+    # stage_a not called because lease check happens before each stage
+    assert call_order == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_continues_with_valid_lease():
+    """Pipeline continues normally when lease is valid."""
+    ctx = _make_ctx(token="tok-valid")
+    call_order = []
+
+    async def stage_a(c):
+        call_order.append("a")
+
+    async def stage_b(c):
+        call_order.append("b")
+
+    with patch("supervisor.pipeline.is_lease_valid", return_value=True):
+        await run_pipeline(ctx, [stage_a, stage_b])
+
+    assert call_order == ["a", "b"]
+
+
+# ── test_background_renewal_exception_resilience (BUG-026) ────────────────
+
+
+@pytest.mark.asyncio
+async def test_background_renewal_survives_exception():
+    """BUG-026: background renewal continues after renew_lease exception."""
+    import asyncio
+    from supervisor.pipeline import _background_lease_renewal
+
+    ctx = _make_ctx(token="tok-bg", lease_ttl=60)
+    stop = asyncio.Event()
+    call_count = {"n": 0}
+
+    def mock_renew(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("db locked")
+        return True
+
+    with patch("supervisor.pipeline.renew_lease", side_effect=mock_renew):
+        task = asyncio.create_task(
+            _background_lease_renewal(ctx, stop, _interval=0.1)
+        )
+        await asyncio.sleep(0.5)
+        stop.set()
+        await task
+
+    assert call_count["n"] >= 2, f"Expected >=2 calls, got {call_count['n']}"

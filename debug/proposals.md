@@ -60,3 +60,29 @@ Append-only лог предложений по улучшению системы
 - **Приоритет:** LOW
 - **Описание:** `cost_usd=0`, `model_id=?` для всех task_runs
 - **Где проверить:** `run_claude_tracked()` в `cost_tracker.py` — парсит ли `--output-format json`? Передаются ли метрики в `log_run()`?
+
+### PROP-011: Диагностика background lease renewal (BUG-026)
+- **Приоритет:** CRITICAL
+- **Описание:** Background lease renewal в `pipeline.py:_background_lease_renewal` не работает. asyncio task создаётся но renewal не происходит.
+- **Диагностика (шаг 1):** Добавить `logger.info()` вместо `logger.debug()` в `renew_lease` (строка 167 lease_manager.py). Добавить `logger.info("bg_renewal: started task_id=%s interval=%s")` в начало `_background_lease_renewal`. Добавить try/except с логированием вокруг `renew_lease()` call.
+- **Диагностика (шаг 2):** Проверить, получает ли asyncio background task CPU time: добавить `logger.info("bg_renewal: tick")` в начало while loop.
+- **Гипотеза A:** asyncio background task никогда не получает CPU (blocked by subprocess?)
+- **Гипотеза B:** silent exception при первом вызове (import error? DB lock?)
+- **Гипотеза C:** Windows ProactorEventLoop issue с asyncio.Event.wait + timeout
+- **Workaround:** Увеличить TTL до 900s (15 мин) до нахождения root cause
+
+### PROP-012: Lease check перед каждым pipeline stage (BUG-017)
+- **Приоритет:** HIGH
+- **Описание:** Pipeline продолжает работу после release_stale. Zombie pipeline пушит код но статус = error.
+- **Решение:** В `run_pipeline` перед каждым `await stage(ctx)` проверять: `if not is_lease_valid(ctx.task_id, ctx.token): raise LeaseConflict()`
+- **Альтернатива:** После release_stale, если pipeline завершился успешно → обновить статус на 'done' вместо оставлять 'error'
+
+### PROP-013: Push unpushed commits перед skip (BUG-027)
+- **Приоритет:** MEDIUM
+- **Описание:** В `_run_ci_and_push`, "nothing to commit" → skip push. Но initial commit может быть unpushed.
+- **Решение:** После "nothing to commit" проверить `git log origin/branch..branch --oneline`. Если есть unpushed commits → всё равно push.
+
+### PROP-014: Рекомендация по моделям
+- **Приоритет:** LOW
+- **Описание:** Sonnet проходит review на 1-й итерации (3/3), Opus получает NEEDS_CHANGES (2/2). При ограниченных лимитах Sonnet может быть cost-effective для simple/medium задач.
+- **Действие:** Рассмотреть использование Sonnet по умолчанию для simple задач, Opus только для complex (>3 файла, архитектура)

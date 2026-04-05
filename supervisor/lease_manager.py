@@ -268,6 +268,31 @@ def release_stale(
     return count
 
 
+def is_lease_valid(
+    task_id: str,
+    worker_id: str,
+    lease_token: str,
+    db_path: Optional[str] = None,
+) -> bool:
+    """
+    Проверить, что lease всё ещё принадлежит нам.
+
+    Быстрый SELECT вместо UPDATE — не продлевает, только проверяет.
+    Используется для раннего обнаружения потери lease (BUG-017).
+
+    Returns:
+        True если lease наш, False если release_stale или другой воркер забрал.
+    """
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT locked_by, lease_token FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+    if not row:
+        return False
+    return row[0] == worker_id and row[1] == lease_token
+
+
 def check_transition(current: str, target: str) -> bool:
     """
     Проверить допустимость перехода статусов.

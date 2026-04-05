@@ -419,3 +419,190 @@ ruff format → git add → git commit → pytest(3 passed) → git push ✅
 - Email IMAP credentials placeholder — игнорируем
 
 **Тесты:** 392 passed, 5 skipped, 0 failed
+
+---
+
+### EXP-008: Stability run — непокрытые фичи + batch E2E
+- **Дата:** 2026-04-04
+- **Цель:** Тестировать непокрытые фичи (review_cycle, planning, security), проверить стабильность E2E
+- **Стратегия:** Batch из 5 задач на разные фичи
+
+**Задачи:**
+
+| ID | Описание | Planning | Worker | Reviewer | Deliver | Итог |
+|---|---------|----------|--------|----------|---------|------|
+| 88e7a1e5 | validate_email + regex + тесты | ✅ complex, plan(3 tasks, conf=85) | ✅ | ✅ APPROVED(iter=2) | ✅ full E2E | **DONE** |
+| 4109d790 | data_pipeline (3 класса, Pipeline, 15 тестов) | ✅ complex(len>400), plan(9 tasks, conf=82) | ✅ | ✅ APPROVED(iter=1) | ✅ full E2E | **DONE** |
+| 84471af6 | safe_eval (math parser без eval) | ✅ complex, plan(5 tasks, conf=82) | ✅ | ✅ APPROVED(iter=1) | ✅ full E2E | **DONE** |
+| b8099434 | LOC analysis (explorer-type) | ✅ | ✅ | ✅ APPROVED(iter=1) | ❌ git commit rc=1 (нет файлов) | **ERROR** |
+| 28fa09b3 | parse_user_input (security edge) | ✅ complex | ✅ | ✅ APPROVED(iter=1) | cancelled (session end) | **CANCELLED** |
+
+**Ключевые наблюдения:**
+
+1. **E2E pipeline стабилен:** 3/3 coding-задачи прошли полный E2E (plan → execute → review → deliver → git push)
+2. **Review cycle работает:** 88e7a1e5 получил NEEDS_CHANGES на 1-й итерации, worker исправил, APPROVED на 2-й
+3. **Planning pipeline работает:** все задачи корректно классифицированы как complex, планы созданы с confidence 82-85
+4. **Approval mechanism:** работает через `partial_result='plan:approved'` (не через status change)
+5. **Background lease renewal:** ни одного lease_stale за всю сессию (supervisor uptime ~12 мин)
+6. **TG notifications:** все отправлены (200 OK)
+
+**Новые находки:**
+
+| # | Bug | Severity | Описание |
+|---|-----|----------|----------|
+| 25 | Explorer/analysis задачи фейлятся в deliver | MEDIUM | Задачи без файлов (анализ, отчёты) идут в deliver → git commit rc=1 → pytest rc=5 → CI auto-fix → git_push_failed. Нужен skip deliver для задач без changed_files. |
+
+**Покрытие фич после сессии:**
+
+| Фича | До | После | Статус |
+|------|-----|-------|--------|
+| basic_worker | 3/3 (100%) | 3/3 | ✅ stable |
+| review_cycle | 0/2 (0%) | **1/2 (50%)** | ✅ NEEDS_CHANGES → fix → APPROVED |
+| planning | 0/3 (0%) | **3/3 (100%)** | ✅ classify → plan → approve → execute |
+| ci_autofix | 0/2 (0%) | 0/2 | ❌ не протестировано изолированно (сработал на explorer) |
+| persistent_completion | 0/1 (0%) | 0/1 | ❌ не тестировалось |
+| team_runtime | 0/1 (0%) | 0/1 | ❌ не тестировалось |
+| security | 1/5 (20%) | 1/5 | без изменений |
+| explorer | 2/3 (67%) | 2/3 | BUG-025 на deliver |
+
+**Метрики:**
+- Supervisor uptime: ~12 мин без crash
+- Задач выполнено: 3 DONE, 1 ERROR, 1 CANCELLED
+- Worker quality: 3/4 одобрены reviewer (2 на 1-й итерации, 1 на 2-й)
+- Lease stale: **0** (фикс работает)
+- Average time per task: ~3-4 мин (planning + execute + review + deliver)
+
+**Вердикт:** Pipeline стабилен. Все критические баги (lease, worktree, safe_exec) починены и подтверждены. Единственная новая находка — BUG-025 (explorer deliver), severity MEDIUM.
+
+---
+
+### EXP-009: Multi-model session — Sonnet vs Opus, lease renewal regression
+- **Дата:** 2026-04-05
+- **Цель:** Тестировать непокрытые фичи с разными моделями (opus/sonnet), проверить lease renewal
+- **Стратегия:** Sonnet — простые/security задачи, Opus — complex multi-file
+
+**Задачи (Batch 1):**
+
+| ID | Описание | Model | Planning | Worker | Reviewer | Deliver | Итог |
+|---|---------|-------|----------|--------|----------|---------|------|
+| 79674fd6 | string_utils (3 функции, 17 тестов) | Sonnet | ✅ complex, conf=82 | ✅ 51s | ✅ APPROVED(1) | ✅ ruff fix + push | **DONE** |
+| 4699b5f2 | HTML sanitizer (XSS protection) | Sonnet | ✅ complex, conf=82 | ✅ 189s | ✅ APPROVED(1) | ✅ zombie push | **ERROR (lease_stale)** |
+| dc54db4e | Validation framework (3 файла) | Opus | ✅ complex, conf=82 | ✅ 79s | iter1: NEEDS_CHANGES → iter2: APPROVED | ❌ ruff fix + nothing to commit | **ERROR (lease_stale)** |
+
+**Ключевые находки:**
+
+1. **BUG-026 (CRITICAL): Background lease renewal НЕ РАБОТАЕТ**
+   - Ноль записей `lease_renewed` в логах (DEBUG level, но это значит что renew_lease никогда не вызывался успешно — иначе бы locked_until обновился)
+   - 2/3 задач получили lease_stale (pipeline >300s)
+   - 79674fd6 выжил ТОЛЬКО потому что уложился в TTL (281s из 300s)
+   - Код в `pipeline.py:_background_lease_renewal` выглядит правильно, но renewal не происходит
+   - **Возможные причины:** asyncio scheduling issue, silent exception в background task, Windows ProactorEventLoop bug
+   - **РЕГРЕССИЯ:** В EXP-006 (04-03) renewal работал. Код не менялся. Нужна диагностика.
+
+2. **BUG-017 (HIGH) — подтверждён: Pipeline продолжает после lease_stale**
+   - 4699b5f2: lease_stale → pipeline продолжил → reviewer APPROVED → deliver → CI auto-fix → **git push SUCCESS**
+   - dc54db4e: lease_stale → pipeline продолжил → deliver → CI auto-fix → "nothing to commit" → push пропущен
+   - Pipeline НЕ проверяет валидность lease перед каждым stage
+   - Результат: task status="error" но код на GitHub. Пользователь видит "ошибку" хотя задача выполнена.
+
+3. **BUG-027 (MEDIUM): CI auto-fix "nothing to commit" пропускает push**
+   - dc54db4e: initial commit + ruff fix commit сделаны локально
+   - После CI auto-fix: "nothing to commit" → skip CI/push
+   - Initial commits НЕ запушены, код только в local bare mirror
+   - Fix: проверять `git log origin/branch..branch` (unpushed commits) перед skip
+
+4. **CI auto-fix pipeline впервые протестирован:**
+   - 79674fd6: ruff check failed (lambda → def) → CI auto-fix → fixed → pushed ✅
+   - 4699b5f2: pytest rc=2 → CI auto-fix → fixed (hypothesis dep) → pushed ✅
+   - dc54db4e: ruff check failed → CI auto-fix → "nothing to commit" (BUG-027)
+
+5. **Review cycle подтверждён для Opus:**
+   - dc54db4e: iter 1 NEEDS_CHANGES (reviewer нашёл issues) → worker исправил → iter 2 APPROVED
+   - Первый NEEDS_CHANGES для Opus в нашей истории
+
+6. **Model comparison (Sonnet vs Opus):**
+   | Метрика | Sonnet (string_utils) | Sonnet (sanitizer) | Opus (validation) |
+   |---------|----------------------|--------------------|--------------------|
+   | Worker time | 51s | 189s | 79s + 116s |
+   | Reviewer time | 70s | 141s | 36s + 51s |
+   | Review iters | 1 | 1 | 2 |
+   | Code quality | Хороший (17 тестов) | Отличный (XSS, hypothesis) | Хороший (354 строки, 3 файла) |
+   | E2E result | DONE | lease_stale (but pushed) | lease_stale (not pushed) |
+
+   - Sonnet на security задаче: 189s worker (3.7x дольше простой задачи)
+   - Opus получил NEEDS_CHANGES (reviewer строже к multi-file?)
+   - Sonnet worker на sanitizer сгенерировал hypothesis tests без просьбы!
+
+7. **Cost tracking (BUG-023) всё ещё не работает:** model_id='', cost_usd=0 для всех runs
+
+**Покрытие фич после Batch 1:**
+
+| Фича | До | После | Изменение |
+|------|-----|-------|-----------|
+| basic_worker | 100% | 100% | — |
+| review_cycle | 50% | **100%** | dc54db4e NEEDS_CHANGES→APPROVED |
+| planning | 100% | 100% | — |
+| ci_autofix | 0% | **67%** | 79674fd6 ruff fix, 4699b5f2 pytest fix |
+| security | 20% | **40%** | 4699b5f2 HTML sanitizer XSS |
+| clarification | 60% | 60% | — |
+| explorer | 67% | 67% | — |
+| persistent_completion | 0% | 0% | не тестировалось |
+| team_runtime | 0% | 0% | не тестировалось |
+
+**Задачи (Batch 2):**
+
+| ID | Описание | Model | Planning | Worker | Reviewer | Deliver | Итог |
+|---|---------|-------|----------|--------|----------|---------|------|
+| a77db7d5 | Stack class + тесты | Sonnet | skipped (simple!) | ✅ 36s | ✅ APPROVED(1) | ✅ all CI pass + push | **DONE** |
+| 95aa89ae | Matrix operations + тесты | Opus | ✅ complex, conf=85 | ✅ 50s | NEEDS_CHANGES x2 → APPROVED(3) | ✅ zombie push | **ERROR (lease_stale)** |
+
+**Дополнительные находки из Batch 2:**
+
+8. **Opus: 3 review итерации для matrix задачи**
+   - iter 1: NEEDS_CHANGES (50s reviewer) → worker retry
+   - iter 2: NEEDS_CHANGES (90s reviewer + worker) → worker retry
+   - iter 3: APPROVED (58s reviewer)
+   - **Паттерн: Opus получает NEEDS_CHANGES в 100% задач (2/2), Sonnet — 0% (2/2 coding)**
+   - Возможная причина: reviewer более строг к opus output, или opus пишет "слишком сложный" код
+
+9. **Planning classifier: short description → simple (правильно!)**
+   - a77db7d5 (stack, ~80 chars description) → `simple`, planning skipped → total 95s
+   - Все остальные задачи (>200 chars) → `complex`, planning required
+   - Classifier работает адекватно
+
+10. **Lease renewal root cause найден:**
+    - locked_until для 95aa89ae был 03:02:28 — это ровно 300s после plan approval (02:57:28)
+    - Значит ТОЛЬКО planning stage poll loop обновлял lease
+    - Background renewal task в `pipeline.py` НЕ обновляет lease вообще
+    - **Подтверждение:** planning.py renew_lease работает, pipeline.py background_renewal — нет
+    - **Гипотеза:** asyncio task создаётся но никогда не получает CPU time, или тихо падает
+
+**Сводка по всей сессии EXP-009:**
+
+| Метрика | Значение |
+|---------|----------|
+| Supervisor uptime | ~30 мин без crash |
+| Задач запущено | 5 |
+| Задач DONE | 2 (79674fd6, a77db7d5) |
+| Задач ERROR (zombie success) | 3 (4699b5f2, dc54db4e, 95aa89ae) — код на GitHub для 2 из 3 |
+| Lease stale incidents | 3 (все из-за нерабочего background renewal) |
+| CI auto-fix triggered | 3 (79674fd6: ruff, 4699b5f2: pytest, dc54db4e: ruff) |
+| Review cycles (NEEDS_CHANGES) | 3 (dc54db4e iter1, 95aa89ae iter1+2) |
+| TG notifications | все отправлены |
+| Новые баги | 2 (BUG-026, BUG-027) |
+| Подтверждённые баги | 1 (BUG-017) |
+
+**Opus vs Sonnet comparison:**
+
+| Метрика | Sonnet | Opus |
+|---------|--------|------|
+| Tasks run | 3 | 2 |
+| DONE (clean) | 2 | 0 |
+| Zombie success | 1 | 2 |
+| Avg worker time | 92s | 81s |
+| Review NEEDS_CHANGES | 0/3 | 3/4 iters |
+| Code quality | Хороший (hypothesis!) | Хороший (multi-file) |
+| Better for | Simple/medium tasks | Complex multi-file |
+| Recommendation | Default для production | Для complex, но нужен TTL↑ |
+
+**Вердикт:** Pipeline стабилен — код создаётся, ревьюится, деливерится. Но background lease renewal сломан (BUG-026 CRITICAL) — все задачи >5 мин получают lease_stale. Zombie pipeline спасает ситуацию (код пушится), но статус неверный. Нужен фикс BUG-026 + BUG-017 (lease check перед каждым stage).

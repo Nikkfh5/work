@@ -15,6 +15,7 @@ from supervisor.lease_manager import (
     release_lease,
     release_stale,
     check_transition,
+    is_lease_valid,
 )
 
 
@@ -280,3 +281,40 @@ def test_invalid_transitions():
     assert check_transition("done", "pending") is False
     assert check_transition("running", "pending") is False
     assert check_transition("cancelled", "running") is False
+
+
+# ── Тесты is_lease_valid (BUG-017) ─────────────────────────────────────────
+
+
+def test_is_lease_valid_active(db_path, task_id):
+    """is_lease_valid returns True for active lease with matching token."""
+    acquire_lease(
+        task_id=task_id, worker_id="w1", db_path=db_path, uuid_fn=make_uuid("tok-v1")
+    )
+    assert is_lease_valid(task_id, "w1", "tok-v1", db_path=db_path) is True
+
+
+def test_is_lease_valid_wrong_token(db_path, task_id):
+    """is_lease_valid returns False for wrong token."""
+    acquire_lease(
+        task_id=task_id, worker_id="w1", db_path=db_path, uuid_fn=make_uuid("tok-v2")
+    )
+    assert is_lease_valid(task_id, "w1", "wrong", db_path=db_path) is False
+
+
+def test_is_lease_valid_after_release_stale(db_path, task_id):
+    """is_lease_valid returns False after release_stale clears lease."""
+    acquire_lease(
+        task_id=task_id, worker_id="w1", db_path=db_path, uuid_fn=make_uuid("tok-v3")
+    )
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE tasks SET locked_until='2020-01-01 00:00:00' WHERE id=?", (task_id,)
+        )
+    release_stale(db_path=db_path, now_fn=make_now())
+    assert is_lease_valid(task_id, "w1", "tok-v3", db_path=db_path) is False
+
+
+def test_is_lease_valid_nonexistent_task(db_path):
+    """is_lease_valid returns False for non-existent task."""
+    assert is_lease_valid("no-such-task", "w1", "tok", db_path=db_path) is False
