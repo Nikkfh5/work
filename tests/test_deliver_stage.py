@@ -352,3 +352,33 @@ async def test_ci_auto_fix_event_dispatched():
     assert "CI failed" in msg
     assert "attempt 2" in msg
     assert "lint failed" in msg
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_commit_no_upstream_still_pushes(db_path):
+    """BUG-027: no upstream tracking (new branch) -> still push."""
+    push_called = []
+
+    def mock_executor(cmd, cwd=None, timeout=None):
+        if cmd[0] == "ruff":
+            return ("", "", 0)
+        if cmd[0] == "git" and "add" in cmd:
+            return ("", "", 0)
+        if cmd[0] == "git" and "commit" in cmd:
+            return ("On branch ai/task-test\nnothing to commit, working tree clean", "", 1)
+        if cmd[0] == "git" and "log" in cmd and "@{upstream}" in " ".join(cmd):
+            return ("", "fatal: no upstream configured for branch", 128)
+        if cmd[0] == "git" and "push" in cmd:
+            push_called.append(cmd)
+            return ("", "", 0)
+        if cmd[0] == "pytest":
+            return ("", "", 0)
+        return ("", "", 0)
+
+    ctx = _make_ctx(db_path=db_path, executor=mock_executor)
+
+    with patch("supervisor.stages.deliver.release_lease"):
+        with patch("supervisor.stages.deliver._fail_final"):
+            await deliver_stage(ctx)
+
+    assert len(push_called) >= 1, "Should push even when nothing to commit but no upstream"

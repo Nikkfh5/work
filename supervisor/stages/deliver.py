@@ -88,6 +88,10 @@ async def _run_ci_and_push(
                     elif log_rc != 0:
                         # No upstream (new branch) — assume unpushed
                         has_unpushed = True
+                        logger.info(
+                            "_run_ci_and_push: no upstream, assuming unpushed task_id=%s",
+                            task_id,
+                        )
                 except Exception:
                     has_unpushed = True
                 if not has_unpushed:

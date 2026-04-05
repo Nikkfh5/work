@@ -590,3 +590,67 @@ async def test_background_renewal_survives_exception():
         await task
 
     assert call_count["n"] >= 2, f"Expected >=2 calls, got {call_count['n']}"
+
+
+@pytest.mark.asyncio
+async def test_background_renewal_actually_renews():
+    """BUG-026: verify background task actually calls renew_lease."""
+    import asyncio
+    from supervisor.pipeline import _background_lease_renewal
+
+    ctx = _make_ctx(token="tok-active", lease_ttl=60)
+    stop = asyncio.Event()
+    renew_calls = []
+
+    def mock_renew(*args, **kwargs):
+        renew_calls.append(1)
+        return True
+
+    with patch("supervisor.pipeline.renew_lease", side_effect=mock_renew):
+        task = asyncio.create_task(
+            _background_lease_renewal(ctx, stop, _interval=0.05)
+        )
+        await asyncio.sleep(0.3)
+        stop.set()
+        await task
+
+    assert len(renew_calls) >= 3, f"Expected >=3 renewals, got {len(renew_calls)}"
+
+
+@pytest.mark.asyncio
+async def test_background_renewal_skips_when_no_token():
+    """Background renewal skips renew_lease when token not yet set."""
+    import asyncio
+    from supervisor.pipeline import _background_lease_renewal
+
+    ctx = _make_ctx(lease_ttl=60)
+    ctx.token = ""
+    stop = asyncio.Event()
+
+    with patch("supervisor.pipeline.renew_lease") as mock_renew:
+        task = asyncio.create_task(
+            _background_lease_renewal(ctx, stop, _interval=0.05)
+        )
+        await asyncio.sleep(0.2)
+        stop.set()
+        await task
+
+    mock_renew.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_lease_or_abort_returns_true_when_valid():
+    """ctx.check_lease_or_abort() returns True when lease is valid."""
+    ctx = _make_ctx(token="tok-valid")
+    with patch("supervisor.pipeline.is_lease_valid", return_value=True):
+        result = await ctx.check_lease_or_abort()
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_lease_or_abort_returns_false_when_lost():
+    """ctx.check_lease_or_abort() returns False when lease is gone."""
+    ctx = _make_ctx(token="tok-gone")
+    with patch("supervisor.pipeline.is_lease_valid", return_value=False):
+        result = await ctx.check_lease_or_abort()
+    assert result is False

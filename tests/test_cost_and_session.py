@@ -121,6 +121,44 @@ class TestRunClaudeTracked:
 # ── session_manager tests ──────────────────────────────────────────────────────
 
 
+    def test_extract_metrics_partial_no_usage(self):
+        """Response with duration but no usage -> tokens default to 0."""
+        m = extract_metrics({"duration_ms": 1500, "total_cost_usd": 0.01})
+        assert m["elapsed_ms"] == 1500
+        assert m["cost_usd"] == 0.01
+        assert m["input_tokens"] == 0
+        assert m["model_id"] == ""
+
+    def test_extract_metrics_multiple_models_picks_first(self):
+        """modelUsage with 2 models -> picks first key."""
+        m = extract_metrics({
+            "modelUsage": {
+                "model-a": {"contextWindow": 200000, "maxOutputTokens": 8000},
+                "model-b": {"contextWindow": 100000, "maxOutputTokens": 4000},
+            }
+        })
+        assert m["model_id"] == "model-a"
+        assert m["context_window"] == 200000
+
+
+class TestRunClaudeTrackedDI:
+    """Edge case tests for run_claude_tracked with DI runner."""
+
+    @pytest.mark.asyncio
+    async def test_di_runner_forwards_cwd_timeout(self):
+        """Verify cwd and timeout are forwarded to injected runner."""
+        captured = {}
+
+        async def spy(prompt, cwd=None, timeout=300):
+            captured["cwd"] = cwd
+            captured["timeout"] = timeout
+            return "ok"
+
+        await run_claude_tracked(prompt="p", cwd="/tmp/test", timeout=60, runner=spy)
+        assert captured["cwd"] == "/tmp/test"
+        assert captured["timeout"] == 60
+
+
 class TestSessionCheckpoints:
     """Tests for session_manager checkpoint save/load/resume."""
 
@@ -244,6 +282,45 @@ class TestShouldRefreshSession:
             "max_output_tokens": 0,
         }
         assert should_refresh_session(metrics) is False
+
+
+    def test_should_refresh_exactly_at_threshold_is_false(self):
+        """Exactly at 80% (800k/1M) -> False (strict > comparison)."""
+        metrics = {
+            "input_tokens": 800000,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+            "output_tokens": 1000,
+            "context_window": 1000000,
+            "max_output_tokens": 64000,
+        }
+        assert should_refresh_session(metrics) is False
+
+    def test_should_refresh_cache_tokens_count(self):
+        """cache_creation + cache_read push total over threshold."""
+        metrics = {
+            "input_tokens": 300000,
+            "cache_creation_tokens": 300000,
+            "cache_read_tokens": 250000,
+            "output_tokens": 1000,
+            "context_window": 1000000,
+            "max_output_tokens": 64000,
+        }
+        # 300k + 300k + 250k = 850k > 800k
+        assert should_refresh_session(metrics) is True
+
+    def test_should_refresh_custom_threshold(self):
+        """Custom context_threshold=0.5 triggers at 600k/1M."""
+        metrics = {
+            "input_tokens": 600000,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+            "output_tokens": 1000,
+            "context_window": 1000000,
+            "max_output_tokens": 64000,
+        }
+        assert should_refresh_session(metrics, context_threshold=0.5) is True
+        assert should_refresh_session(metrics, context_threshold=0.8) is False
 
 
 class TestBuildResumedPrompt:

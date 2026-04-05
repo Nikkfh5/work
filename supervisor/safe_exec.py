@@ -115,6 +115,20 @@ COMMAND_PROFILES: dict[str, dict] = {
     },
 }
 
+# Whitelist of safe git config keys (case-insensitive).
+# Write operations to keys outside this set are blocked.
+# Read-only operations (--get, --get-all, --list, --get-regexp) are always allowed.
+SAFE_GIT_CONFIG_KEYS = {
+    "user.name",
+    "user.email",
+    "user.signingkey",
+    "push.default",
+    "init.defaultbranch",
+    "commit.gpgsign",
+}
+
+_GIT_CONFIG_READ_FLAGS = frozenset({"--get", "--get-all", "--list", "--get-regexp"})
+
 # Команды которые НИКОГДА не разрешены
 DENYLIST_COMMANDS = {
     "rm",
@@ -234,6 +248,23 @@ def _check_cmd(cmd: list[str]) -> None:
             for flag in profile["blocked_flags"]:
                 if arg == flag or arg.startswith(flag + "="):
                     raise SafeExecError(f"safe_exec: git flag {arg!r} is blocked")
+
+    # Для git config: whitelist safe keys only
+    if prog_name == "git" and len(args) >= 1 and args[0] == "config":
+        # Read-only operations are always safe
+        is_read_only = any(a in _GIT_CONFIG_READ_FLAGS for a in args[1:])
+        if not is_read_only:
+            # Find the config key (skip flags like --global, --local, --system)
+            config_key = None
+            for arg in args[1:]:
+                if not arg.startswith("-"):
+                    config_key = arg
+                    break
+            if config_key is not None and config_key.lower() not in SAFE_GIT_CONFIG_KEYS:
+                raise SafeExecError(
+                    f"safe_exec: git config key {config_key!r} is not in safe whitelist. "
+                    f"Allowed: {sorted(SAFE_GIT_CONFIG_KEYS)}"
+                )
 
     # Для npm run: проверяем allowed_run_scripts
     if prog_name == "npm" and len(args) >= 2 and args[0] == "run":

@@ -164,7 +164,7 @@ def renew_lease(
         renewed = result.rowcount > 0
 
     if renewed:
-        logger.debug("lease_renewed task_id=%s worker=%s", task_id, worker_id)
+        logger.info("lease_renewed task_id=%s worker=%s", task_id, worker_id)
     else:
         logger.warning(
             "lease_stale task_id=%s worker=%s token=%s",

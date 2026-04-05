@@ -224,3 +224,60 @@ def test_safe_exec_python_m_unknown_blocked(tmp_path):
     """python -m evil_module — блокируется."""
     with pytest.raises(SafeExecError, match="not allowed"):
         _check_cmd(["python", "-m", "evil_module"])
+
+
+# ── git config whitelist tests ─────────────────────────────────────────────
+
+
+def test_git_config_safe_key_user_name():
+    """git config user.name 'Foo' — allowed."""
+    _check_cmd(["git", "config", "user.name", "Foo Bar"])
+
+
+def test_git_config_safe_key_global():
+    """git config --global user.email 'x@y.z' — allowed (flag before key)."""
+    _check_cmd(["git", "config", "--global", "user.email", "x@y.z"])
+
+
+def test_git_config_push_default():
+    """git config push.default simple — allowed."""
+    _check_cmd(["git", "config", "push.default", "simple"])
+
+
+def test_git_config_init_defaultbranch_case_insensitive():
+    """git config init.defaultBranch main — allowed (case-insensitive)."""
+    _check_cmd(["git", "config", "init.defaultBranch", "main"])
+
+
+def test_git_config_dangerous_sshcommand():
+    """git config core.sshCommand 'evil' — blocked."""
+    with pytest.raises(SafeExecError, match="not in safe whitelist"):
+        _check_cmd(["git", "config", "core.sshCommand", "evil"])
+
+
+def test_git_config_dangerous_pager():
+    """git config core.pager 'bash -c evil' — blocked."""
+    with pytest.raises(SafeExecError, match="not in safe whitelist"):
+        _check_cmd(["git", "config", "core.pager", "bash -c evil"])
+
+
+def test_git_config_dangerous_hookspath():
+    """git config core.hooksPath '/tmp/evil' — blocked."""
+    with pytest.raises(SafeExecError, match="not in safe whitelist"):
+        _check_cmd(["git", "config", "core.hooksPath", "/tmp/evil"])
+
+
+def test_git_config_dangerous_alias():
+    """git config alias.status '!rm -rf /' — blocked."""
+    with pytest.raises(SafeExecError, match="not in safe whitelist"):
+        _check_cmd(["git", "config", "alias.status", "!rm -rf /"])
+
+
+def test_git_config_get_allowed():
+    """git config --get user.name — read-only, always allowed."""
+    _check_cmd(["git", "config", "--get", "user.name"])
+
+
+def test_git_config_list_allowed():
+    """git config --list — read-only, always allowed."""
+    _check_cmd(["git", "config", "--list"])

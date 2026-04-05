@@ -282,6 +282,19 @@ python .claude/skills/gh-fix-ci/scripts/inspect_pr_checks.py --repo "." --pr "<n
 
 **Двухэтапное ревью:** spec compliance СНАЧАЛА, code quality ПОТОМ. Quality review не начинается до прохождения spec review.
 
+### 8. sharp-edges (Trail of Bits — ПРИ РЕВЬЮ API/КОНФИГОВ)
+
+**Триггер:** при написании или ревью кода, который содержит:
+- Allowlist/denylist дизайн: `safe_exec`, `guard_bash`, config validation
+- Криптография или секреты: hashlib, hmac, token handling
+- Сериализация/десериализация: JSON parsing, pickle, YAML
+- Path handling: symlinks, worktree paths, realpath
+- Subprocess вызовы: command construction, env vars
+
+**Действие:** прочитать `.claude/skills/sharp-edges/SKILL.md` и `references/lang-python.md`, проанализировать код на footguns — места где "простой путь" ведёт к небезопасному поведению.
+
+**НЕ триггерится:** при обычном написании бизнес-логики, тестов, документации.
+
 ### Кастомные Semgrep правила (`.semgrep/rules/`)
 
 Автоматическая проверка инвариантов проекта. Запускать после каждого модуля:

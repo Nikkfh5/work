@@ -50,7 +50,7 @@ class WorkerContext:
 
     # Lease
     token: str = ""
-    lease_ttl: int = 300
+    lease_ttl: int = 600
 
     # Worktree
     repos: list = field(default_factory=list)
@@ -104,6 +104,29 @@ class WorkerContext:
         events = self._events.copy()
         self._events.clear()
         return events
+
+    async def check_lease_or_abort(self) -> bool:
+        """Check if our lease is still valid. Returns False if lost.
+
+        Stages can call this after long-running operations (e.g. claude calls)
+        to detect mid-stage lease expiry (BUG-017 mitigation).
+        """
+        if not self.token:
+            return True
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        valid = await loop.run_in_executor(
+            None,
+            lambda: is_lease_valid(
+                self.task_id, self.worker_id, self.token, self.db_path
+            ),
+        )
+        if not valid:
+            logger.warning(
+                "check_lease_or_abort: lease lost task_id=%s", self.task_id
+            )
+        return valid
 
 
 # ── StageError hierarchy ─────────────────────────────────────────────────────
@@ -237,6 +260,10 @@ async def _background_lease_renewal(ctx: WorkerContext, stop_event, *, _interval
             return  # stop_event was set
         except asyncio.TimeoutError:
             pass  # interval elapsed, time to renew
+        logger.info(
+            "background_lease_renewal: tick task_id=%s token=%s",
+            ctx.task_id, "yes" if ctx.token else "no",
+        )
 
         if not ctx.token:
             logger.debug("background_lease_renewal: no token yet task_id=%s", ctx.task_id)
