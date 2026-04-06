@@ -84,3 +84,20 @@ def test_redact_github_other_token_types():
         result = redact(text)
         assert "[GITHUB_TOKEN]" in result
         assert prefix not in result
+
+
+def test_redact_telegram_bot_token_full_format():
+    """Full Telegram bot token: bot_id:AAtoken format."""
+    text = "token is 8783330622:AAGf8ENH8Fxyz123abcdefghijklmno"
+    result = redact(text)
+    assert "8783330622" not in result
+    assert "AAGf8ENH8F" not in result
+    assert "[TG_BOT_TOKEN]" in result
+
+
+def test_redact_git_url_with_embedded_token():
+    """Git stderr contains https://token@host URL -> redacted."""
+    text = "fatal: unable to access 'https://ghp_AbCdEfGhIjKlMnOpQrStUvWx12@github.com/org/repo.git/'"
+    result = redact(text)
+    assert "ghp_" not in result
+    assert "[GITHUB_TOKEN]" in result or "[REDACTED]" in result

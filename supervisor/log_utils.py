@@ -22,7 +22,9 @@ REDACT_PATTERNS: list[tuple[str, str]] = [
     (r"glpat-[A-Za-z0-9_-]{20,}", "[GITLAB_TOKEN]"),
     # Notion integration token
     (r"secret_[A-Za-z0-9]{40,}", "[NOTION_TOKEN]"),
-    # Telegram Bot token (AAF...)
+    # Telegram Bot token: full format bot_id:AAtoken (more specific — first)
+    (r"\d{5,}:AA[A-Za-z0-9_-]{20,}", "[TG_BOT_TOKEN]"),
+    # Telegram Bot token: partial (AAF... fragment)
     (r"AAF[A-Za-z0-9_-]{30,}", "[TG_TOKEN]"),
     # Anthropic API key
     (r"sk-ant-api[A-Za-z0-9_-]{20,}", "[ANTHROPIC_KEY]"),

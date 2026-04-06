@@ -9,7 +9,13 @@
       "Bash(semgrep --metrics=off --config .semgrep/rules/ .)",
       "Bash(pip install:*)",
       "Bash(ruff check:*)",
-      "Bash(pkill -f \"python -m supervisor.main\")"
+      "Bash(pkill -f \"python -m supervisor.main\")",
+      "mcp__playwright__browser_run_code",
+      "mcp__playwright__browser_fill_form",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_type",
+      "mcp__playwright__browser_press_key",
+      "mcp__playwright__browser_close"
     ],
     "deny": [
       "Bash(rm -rf:*)",

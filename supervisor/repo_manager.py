@@ -26,6 +26,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from supervisor.log_utils import redact
+
 logger = logging.getLogger(__name__)
 
 # Дефолтные корни директорий (переопределяются в тестах)
@@ -115,7 +117,7 @@ class RepoManager:
                 "git %s failed (code %d): %s",
                 args[0],
                 result.returncode,
-                result.stderr[:500],
+                redact(result.stderr[:500]),
             )
         return result
 
@@ -163,7 +165,7 @@ class RepoManager:
             result = self._run_git(["fetch", "--all"], cwd=str(mirror))
             if result.returncode != 0:
                 raise RepoManagerError(
-                    f"git fetch failed for {job}/{alias}: {result.stderr[:300]}"
+                    f"git fetch failed for {job}/{alias}: {redact(result.stderr[:300])}"
                 )
         else:
             # Клонируем (with retry for concurrent access — BUG-018 fix)
@@ -185,7 +187,7 @@ class RepoManager:
                     logger.info("ensure_mirror: mirror created by concurrent task %s/%s", job, alias)
                     return mirror
                 raise RepoManagerError(
-                    f"git clone failed for {job}/{alias}: {result.stderr[:300]}"
+                    f"git clone failed for {job}/{alias}: {redact(result.stderr[:300])}"
                 )
 
         logger.info("ensure_mirror: %s/%s ready at %s", job, alias, mirror)
@@ -245,7 +247,7 @@ class RepoManager:
             )
             if result.returncode != 0:
                 raise RepoManagerError(
-                    f"git worktree add failed for task {task_id}/{alias}: {result.stderr[:300]}"
+                    f"git worktree add failed for task {task_id}/{alias}: {redact(result.stderr[:300])}"
                 )
 
         # Создаём симлинк для MCP совместимости
@@ -349,7 +351,7 @@ class RepoManager:
             if result.returncode != 0:
                 logger.warning(
                     "cleanup_worktree: git worktree remove failed: %s",
-                    result.stderr[:200],
+                    redact(result.stderr[:200]),
                 )
 
         # 3. Удаляем директорию worktrees/{task_id}/ если пуста

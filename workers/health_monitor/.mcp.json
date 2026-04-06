@@ -3,6 +3,16 @@
     "context7": {
       "type": "url",
       "url": "https://mcp.context7.com/mcp"
+    },
+    "git": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-git"]
+    },
+    "fetch": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
     }
   }
 }
